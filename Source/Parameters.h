@@ -45,8 +45,29 @@ inline constexpr Spec specs[]={
 {"mbThreshold2","Mid","Médiums",-60,0,-18,0.1," dB"},
 {"mbThreshold3","High","Aigus",-60,0,-18,0.1," dB"},
 {"mbRatio","Ratio","Ratio",1,12,3,0.1,":1"},
-{"plosiveAmount","Reduction","Réduction",0,100,65,0.1," %"}};
-inline constexpr const char* switches[]={"power","tune","sat","eq","doubler","chorus","delay","reverb","sync","gate","deess","compress","autolevel","harmony","bell","harmonyMidi","diatonic","multiband","plosive"};
+{"plosiveAmount","Reduction","Réduction",0,100,65,0.1," %"},
+{"masterThreshold","Threshold","Seuil",-60,0,-18,0.1," dB"},
+{"masterRatio","Ratio","Ratio",1,12,3,0.1,":1"},
+{"masterMakeup","Makeup","Gain",0,18,0,0.1," dB"},
+{"masterModel","Model","Modèle",0,3,0,1,""},
+{"masterDrive","Drive","Drive",0,24,4,0.1," dB"},
+{"masterColor","Color","Couleur",0,2,0,1,""},
+{"masterMix","Mix","Mix",0,100,25,0.1," %"},
+{"limitCeiling","Ceiling","Plafond",-12,0,-1,0.1," dB"},
+{"limitRelease","Release","Relâchement",5,500,80,1," ms"},
+{"dynThreshold1","Threshold 1","Seuil 1",-60,0,-24,0.1," dB"},
+{"dynRange1","Range 1","Plage 1",-12,12,0,0.1," dB"},
+{"dynThreshold2","Threshold 2","Seuil 2",-60,0,-24,0.1," dB"},
+{"dynRange2","Range 2","Plage 2",-12,12,0,0.1," dB"},
+{"dynThreshold3","Threshold 3","Seuil 3",-60,0,-24,0.1," dB"},
+{"dynRange3","Range 3","Plage 3",-12,12,0,0.1," dB"},
+{"dynThreshold4","Threshold 4","Seuil 4",-60,0,-24,0.1," dB"},
+{"dynRange4","Range 4","Plage 4",-12,12,0,0.1," dB"},
+{"dynThreshold5","Threshold 5","Seuil 5",-60,0,-24,0.1," dB"},
+{"dynRange5","Range 5","Plage 5",-12,12,0,0.1," dB"},
+{"dynThreshold6","Threshold 6","Seuil 6",-60,0,-24,0.1," dB"},
+{"dynRange6","Range 6","Plage 6",-12,12,0,0.1," dB"}};
+inline constexpr const char* switches[]={"power","tune","sat","eq","doubler","chorus","delay","reverb","sync","gate","deess","compress","autolevel","harmony","bell","harmonyMidi","diatonic","multiband","plosive","masterComp","masterSat","masterLimit","externalSC","dynamicEq"};
 inline constexpr const char* notes[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
 inline constexpr const char* categories[]={"Natural Correction","Pop Lead","Modern Pop","R&B","Rap and Hip-Hop","Rock Vocals","Electronic and Robotic","Harmonies and Doubles","Voice-Over","Creative Effects"};
 inline constexpr const char* names[10][10]={
