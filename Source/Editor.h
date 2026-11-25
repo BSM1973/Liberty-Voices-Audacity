@@ -12,5 +12,5 @@ class VoicesEditor final:public juce::AudioProcessorEditor,private juce::Timer {
  static constexpr int presetPageSize=7;int presetPage=0;std::array<juce::TextButton,presetPageSize> presetRows;juce::TextButton presetBack,presetForward;juce::Label presetCount;void updatePresetPage();void activatePresetRow(int);std::vector<int> rows;std::vector<juce::File> userFiles;bool browsing=false,midiMode=false;juce::String userName;std::array<float,100> pitchHistory{},correctedHistory{};int historyPos=0;
  void addKnob(int,juce::Rectangle<int>);void addToggle(const char*,juce::Rectangle<int>);void addCombo(const char*,juce::StringArray,juce::Rectangle<int>);void refresh();void filter();void showBrowser(bool);void loadPreset(int);void savePreset();void timerCallback()override;
  juce::String tr(const char* fr,const char* en)const{return juce::String::fromUTF8(p.french?fr:en);}void layoutLanguage();
-public:explicit VoicesEditor(VoicesProcessor&);~VoicesEditor()override;void paint(juce::Graphics&)override;void resized()override{};
+public:bool qualitySnapshot(int,bool,bool,const juce::File&,juce::StringArray&);explicit VoicesEditor(VoicesProcessor&);~VoicesEditor()override;void paint(juce::Graphics&)override;void resized()override{};
 };

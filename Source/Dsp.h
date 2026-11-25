@@ -61,12 +61,12 @@ struct FormantEngine {
  std::array<float,maxN> reference{},wet{},ola{},window{};
  std::array<Complex,maxN> r{},w{};
  std::array<Complex,maxN/2> roots{};std::array<int,maxN> reverse{};
- std::array<float,maxBins> logRef{},logWet{},envRef{},envWet{},tmp{},gains{};
+ std::array<float,maxBins> logRef{},logWet{},envRef{},envWet{},tmp{},gains{},magnitudes{},tapers{};bool spectralTail=false;
  std::array<float,maxBins+1> prefix{};
  int n=1024,hop=256,pos=0,count=0;float sr=48000;
  void prepare(float sampleRate){
   sr=sampleRate;n=sr>64000?2048:1024;hop=n/4;pos=count=0;
-  reference.fill(0);wet.fill(0);ola.fill(0);gains.fill(0);
+  reference.fill(0);wet.fill(0);ola.fill(0);gains.fill(0);spectralTail=false;for(int i=0;i<=n/2;++i){float freq=float(i)*sr/n;tapers[i]=clamp(freq/180.f,0,1)*clamp((std::min(10000.f,sr*.47f)-freq)/1800.f,0,1);}
   for(int i=0;i<n;++i)window[i]=std::sqrt(std::max(0.f,.5f-.5f*std::cos(2*pi*i/n)));
   for(int i=0,j=0;i<n;++i){reverse[i]=j;int bit=n>>1;for(;bit&&(j&bit);bit>>=1)j^=bit;j^=bit;}
   for(int i=0;i<n/2;++i)roots[i]=Complex(std::cos(-2*pi*i/n),std::sin(-2*pi*i/n));
@@ -81,30 +81,30 @@ struct FormantEngine {
   for(int i=0;i<bins;++i){int lo=std::max(0,i-radius),hi=std::min(bins-1,i+radius);output[i]=(prefix[hi+1]-prefix[lo])/float(hi-lo+1);}
  }
  void envelope(const std::array<Complex,maxN>& spectrum,std::array<float,maxBins>& logMag,std::array<float,maxBins>& env,int radius){
-  float peak=0;for(int i=0;i<=n/2;++i)peak=std::max(peak,std::abs(spectrum[i]));
+  float peak=0;for(int i=0;i<=n/2;++i){magnitudes[i]=std::abs(spectrum[i]);peak=std::max(peak,magnitudes[i]);}
   float floor=std::max(1e-7f,peak*.001f);
-  for(int i=0;i<=n/2;++i)logMag[i]=std::log(std::max(floor,std::abs(spectrum[i])));
+  for(int i=0;i<=n/2;++i)logMag[i]=std::log(std::max(floor,magnitudes[i]));
   average(logMag,tmp,radius);average(tmp,env,radius);
  }
  float tick(float ref,float signal,float semitones,float pitchRatio,float fundamental,bool enabled){
   float out=ola[pos];ola[pos]=0;reference[pos]=ref;wet[pos]=signal;pos=(pos+1)&(n-1);
   if(++count<hop)return out;count=0;
   const bool active=enabled&&(std::abs(semitones)>.01f||std::abs(pitchRatio-1)>.002f)&&fundamental>50;
+  // When all spectral gains are exactly zero the FFT pair is an identity.
+  if(!active&&!spectralTail){for(int i=0;i<n;++i){int ix=(pos+i)&(n-1);ola[ix]+=.5f*window[i]*(wet[ix]*window[i]);}return out;}
   for(int i=0;i<n;++i){int ix=(pos+i)&(n-1);w[i]=Complex(wet[ix]*window[i],0);if(active)r[i]=Complex(reference[ix]*window[i],0);}
   fft(w,false);
   if(active){
-   fft(r,false);const int radius=std::clamp(int(std::ceil(std::max(160.f,fundamental*1.1f)*n/sr)),2,n/12);
+   spectralTail=true;fft(r,false);const int radius=std::clamp(int(std::ceil(std::max(160.f,fundamental*1.1f)*n/sr)),2,n/12);
    envelope(r,logRef,envRef,radius);envelope(w,logWet,envWet,radius);
    const float scale=std::pow(2.f,semitones/12.f);
    for(int i=0;i<=n/2;++i){
     float source=clamp(i/scale,0,float(n/2));int lo=int(source),hi=std::min(n/2,lo+1);
     float desired=envRef[lo]+(source-lo)*(envRef[hi]-envRef[lo]);
-    float freq=float(i)*sr/n;
-    float taper=clamp(freq/180.f,0,1)*clamp((std::min(10000.f,sr*.47f)-freq)/1800.f,0,1);
-    float goal=clamp(desired-envWet[i],-1.38f,1.38f)*taper;
+    float goal=clamp(desired-envWet[i],-1.38f,1.38f)*tapers[i];
     gains[i]+=.35f*(goal-gains[i]);
    }
-  }else for(int i=0;i<=n/2;++i)gains[i]*=.65f;
+  }else{spectralTail=false;for(int i=0;i<=n/2;++i){gains[i]*=.65f;if(std::abs(gains[i])<1e-7f)gains[i]=0;else spectralTail=true;}}
   for(int i=0;i<=n/2;++i){float g=std::exp(gains[i]);w[i]*=g;if(i>0&&i<n/2)w[n-i]*=g;}
   fft(w,true);for(int i=0;i<n;++i)ola[(pos+i)&(n-1)]+=.5f*window[i]*w[i].real();
   return out;
@@ -218,8 +218,8 @@ struct Engine {
  std::array<Channel,2> ch; Detector det; VocalIntelligence intelligence;float smoothAlpha=0; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};std::array<float,8> studioEnabled{};std::array<float,4> voiceWeightL{},voiceWeightR{};std::array<float,4> harmonyRatios{{1,1,1,1}},harmonyLevels{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
  int latency(bool isLive)const{return int(std::round(sr*(isLive?.004f:.01f)))+1+(isLive?0:ch[0].formants.n);}
  int latency()const{return latency(live);}
- void setMode(bool mode){if(live==mode)return;live=mode;fade=0;for(auto& c:ch){c.pitch.window=float(2*(latency(mode)-1-(mode?0:c.formants.n)));c.pitch.phase=0;c.pitchBlend=0;c.formants.prepare(sr);std::fill(c.alignedDry.buf.begin(),c.alignedDry.buf.end(),0.f);c.alignedDry.w=0;}}
- void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);studioEnabled.fill(0);harmonyLevels.fill(0);harmonyRatios.fill(1);voiceWeightL.fill(1);voiceWeightR.fill(1);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);c.strip.prepare(sr);for(auto& voice:c.harmonies)voice.prepare(sr);c.multiband.prepare(sr);c.harmonyFormants.resize(4);for(auto& f:c.harmonyFormants)f.prepare(sr);}}
+ void setMode(bool mode){if(live==mode)return;live=mode;fade=0;for(auto& c:ch){c.pitch.window=float(2*(latency(mode)-1-(mode?0:c.formants.n)));c.pitch.phase=0;c.pitchBlend=0;c.formants.prepare(sr);for(int i=0;i<int(c.harmonyFormants.size());++i){auto& f=c.harmonyFormants[size_t(i)];f.prepare(sr);f.count=(i+1)*f.hop/5;}std::fill(c.alignedDry.buf.begin(),c.alignedDry.buf.end(),0.f);c.alignedDry.w=0;}}
+ void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);studioEnabled.fill(0);harmonyLevels.fill(0);harmonyRatios.fill(1);voiceWeightL.fill(1);voiceWeightR.fill(1);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);c.strip.prepare(sr);for(auto& voice:c.harmonies)voice.prepare(sr);c.multiband.prepare(sr);c.harmonyFormants.resize(4);for(int i=0;i<4;++i){auto& f=c.harmonyFormants[size_t(i)];f.prepare(sr);f.count=(i+1)*f.hop/5;}}}
  void tick(float* l,float* r,int channels,const Params& p){
   float in[2]={*l,channels>1?*r:*l}; const std::array<bool,8> switches={p.power,p.tune,p.sat,p.eq,p.doubler,p.chorus,p.delay,p.reverb};if(first){smooth=p;for(int i=0;i<8;++i)enabled[i]=switches[i]?1.f:0.f;first=false;} const float a=smoothAlpha;for(int i=0;i<8;++i)enabled[i]+=a*((switches[i]?1.f:0.f)-enabled[i]);fade=std::min(1.f,fade+1.f/(sr*.012f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)

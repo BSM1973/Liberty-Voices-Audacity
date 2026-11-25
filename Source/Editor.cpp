@@ -75,3 +75,13 @@ void VoicesEditor::drawEq(Graphics& g){g.setColour(ink);g.fillRoundedRectangle(R
 void VoicesEditor::mouseDown(const MouseEvent& e){if(browsing||page!=3||!Rectangle<int>(gx,gy,gw,gh).contains(e.getPosition()))return;float best=1e9f;for(int i=0;i<6;++i){float dx=e.position.x-eqX(p.value(bandId(i,0))),dy=e.position.y-eqY(p.value(bandId(i,1)));float dist=dx*dx+dy*dy;if(dist<best){best=dist;dragBand=i;}}if(dragBand>=0){for(int k=0;k<2;++k)if(auto* a=p.state.getParameter(bandId(dragBand,k)))a->beginChangeGesture();mouseDrag(e);}}
 void VoicesEditor::mouseDrag(const MouseEvent& e){if(dragBand<0)return;p.set(bandId(dragBand,0),80*std::pow(150.f,voices::clamp((e.position.x-gx)/gw,0,1)));p.set(bandId(dragBand,1),18-36*voices::clamp((e.position.y-gy)/gh,0,1));repaint();}
 void VoicesEditor::mouseUp(const MouseEvent&){if(dragBand>=0)for(int k=0;k<2;++k)if(auto* a=p.state.getParameter(bandId(dragBand,k)))a->endChangeGesture();dragBand=-1;}
+
+bool VoicesEditor::qualitySnapshot(int pg,bool french,bool browserOpen,const File& file,StringArray& issues){
+ p.french=french;showBrowser(false);switchPage(pg);layoutLanguage();if(browserOpen)showBrowser(true);
+ std::vector<Component*> visible;
+ auto collect=[&](Component& root){for(int i=0;i<root.getNumChildComponents();++i){auto* child=root.getChildComponent(i);if(!child->isVisible())continue;if(child==&presetPanel)continue;if(browserOpen&&child->getBounds().intersects(presetPanel.getBounds()))continue;visible.push_back(child);}};
+ collect(*this);if(browserOpen)collect(presetPanel);
+ for(size_t i=0;i<visible.size();++i){auto* a=visible[i];if(!a->getParentComponent()->getLocalBounds().contains(a->getBounds()))issues.add("Outside parent: "+a->getName()+" "+a->getBounds().toString());for(size_t j=i+1;j<visible.size();++j){auto* b=visible[j];if(a->getParentComponent()==b->getParentComponent()&&a->getBounds().intersects(b->getBounds()))issues.add("Overlap: "+a->getBounds().toString()+" / "+b->getBounds().toString());}}
+ for(auto* c:visible){String s;if(auto* l=dynamic_cast<Label*>(c))s=l->getText();else if(auto* b=dynamic_cast<Button*>(c))s=b->getButtonText();else if(auto* b=dynamic_cast<ComboBox*>(c))s=b->getText();if(s.containsChar(juce_wchar(0xfffd)))issues.add("Invalid displayed replacement character");}
+ auto image=createComponentSnapshot(getLocalBounds());FileOutputStream stream(file);PNGImageFormat png;bool ok=stream.openedOk()&&png.writeImageToStream(image,stream);showBrowser(false);return ok;
+}
