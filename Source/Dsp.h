@@ -9,22 +9,30 @@ constexpr float pi=3.14159265358979323846f;
 inline float clamp(float x,float a,float b){return std::max(a,std::min(b,x));}
 inline float gain(float db){return std::pow(10.f,db/20.f);}
 inline float midi(float hz){return 69.f+12.f*std::log2(hz/440.f);}
+inline unsigned scaleMask(int scale,unsigned mask){constexpr unsigned scales[]={4095,2741,1453,661,1193,1709,4095};return scale==6?(mask&4095u):scales[std::clamp(scale,0,6)];}
+inline bool noteAllowed(int note,int key,int scale,unsigned mask){int pc=((note-(scale==6?0:key))%12+12)%12;return (scaleMask(scale,mask)&(1u<<pc))!=0;}
 inline int nearest(float n,int key,int scale,unsigned mask){
- constexpr unsigned scales[]={4095,2741,1453,661,1193,1709,4095};
- unsigned allowed=scale==6?mask:scales[std::clamp(scale,0,6)]; if(!allowed) return int(std::round(n));
+ unsigned allowed=scaleMask(scale,mask); if(!allowed) return int(std::round(n));
  int center=int(std::round(n)),best=center; float dist=1e9f;
  for(int i=center-12;i<=center+12;++i){int pc=((i-(scale==6?0:key))%12+12)%12;if((allowed&(1u<<pc))&&std::abs(i-n)<dist){dist=std::abs(i-n);best=i;}}
  return best;
 }
 struct Detector {
- std::array<float,1024> ring{},frame{}; int pos=0,filled=0,count=0,decim=1,phase=0; float sr=12000,hz=0,confidence=0,lp=0,alpha=.3f;
+ static constexpr int frameSize=512,hop=64;
+ std::array<float,frameSize> ring{},frame{}; int pos=0,filled=0,count=0,decim=1,phase=0; float sr=12000,hz=0,confidence=0,lp=0,alpha=.3f;
  void prepare(double sampleRate){*this=Detector{};decim=std::max(1,int(std::round(sampleRate/12000)));sr=float(sampleRate/decim);alpha=1-std::exp(-2*pi*std::min(2500.f,sr*.2f)/float(sampleRate));}
- void push(float x){lp+=alpha*(x-lp);if(++phase<decim)return;phase=0;ring[pos]=lp;pos=(pos+1)%1024;filled=std::min(1024,filled+1);if(++count<128||filled<1024)return;count=0;analyse();}
- void analyse(){for(int i=0;i<1024;++i)frame[i]=ring[(pos+i)%1024];float e=0;for(float x:frame)e+=x*x;if(e<.000002f*1024){hz=confidence=0;return;}
-  int lo=std::max(2,int(sr/900)),hi=std::min(300,int(sr/65)); std::array<float,302> cm{}; float sum=0; cm[0]=1;
-  for(int t=1;t<=hi+1;++t){float d=0;for(int i=0;i<700;++i){float a=frame[i]-frame[i+t];d+=a*a;}sum+=d;cm[t]=sum>1e-12f?d*t/sum:1;}
-  int best=lo; for(int t=lo;t<=hi;++t){if(cm[t]<cm[best])best=t;if(cm[t]<.16f&&cm[t]<=cm[t+1]&&cm[t]<cm[t-1]){best=t;break;}}
-  confidence=1-cm[best];if(confidence<.72f){hz=0;return;}float delta=0,a=cm[best-1],b=cm[best],c=cm[best+1],den=a-2*b+c;if(std::abs(den)>1e-8f)delta=clamp(.5f*(a-c)/den,-.5f,.5f);hz=sr/(best+delta);
+ void push(float x){lp+=alpha*(x-lp);if(++phase<decim)return;phase=0;ring[pos]=lp;pos=(pos+1)%frameSize;filled=std::min(frameSize,filled+1);if(++count<hop||filled<frameSize)return;count=0;analyse();}
+ void analyse(){
+  float mean=0;for(int i=0;i<frameSize;++i){frame[i]=ring[(pos+i)%frameSize];mean+=frame[i];}mean/=frameSize;
+  float energy=0;for(float& x:frame){x-=mean;energy+=x*x;}
+  if(energy<.000002f*frameSize){hz=confidence=0;return;}
+  const int lo=std::max(2,int(sr/900)),hi=std::min(300,int(sr/65)),span=frameSize-hi-1;
+  std::array<float,302> cm{};float sum=0;cm[0]=1;
+  for(int t=1;t<=hi+1;++t){float diff=0;for(int i=0;i<span;++i){float a=frame[i]-frame[i+t];diff+=a*a;}sum+=diff;cm[t]=sum>1e-12f?diff*t/sum:1;}
+  int best=lo;for(int t=lo;t<=hi;++t){if(cm[t]<cm[best])best=t;if(cm[t]<.16f&&cm[t]<=cm[t+1]&&cm[t]<cm[t-1]){best=t;break;}}
+  confidence=clamp(1-cm[best],0,1);if(confidence<.72f){hz=0;return;}
+  float delta=0,a=cm[best-1],b=cm[best],c=cm[best+1],den=a-2*b+c;if(std::abs(den)>1e-8f)delta=clamp(.5f*(a-c)/den,-.5f,.5f);
+  hz=sr/(best+delta);
  }
 };
 struct Delay {
@@ -45,17 +53,37 @@ struct Params {
 };
 struct Engine {
  struct Channel {Shifter pitch,dub;Delay dry,chor,echo,rev;Pole hp,body,pres,air,form,tone;float revFeedback=0;};
- std::array<Channel,2> ch; Detector det; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1;float lastGoal=0;Params smooth{};bool first=true;
- void prepare(double s){sr=float(s);det.prepare(s);ratio=1;phase=0;target=detected=correction=lastGoal=0;targetNote=-1;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.rev.prepare(int(sr*.2f)+8);}}
+ std::array<Channel,2> ch; Detector det; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true;
+ void prepare(double s){sr=float(s);det.prepare(s);ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.rev.prepare(int(sr*.2f)+8);}}
  void tick(float* l,float* r,int channels,const Params& p){
   float in[2]={*l,channels>1?*r:*l}; if(first){smooth=p;first=false;} float a=1-std::exp(-1.f/(sr*.008f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)
   S(input);S(output);S(mix);S(amount);S(formant);S(drive);S(satMix);S(hp);S(body);S(presence);S(air);S(doubleAmount);S(spread);S(detune);S(chorusRate);S(chorusDepth);S(chorusMix);S(delayMs);S(feedback);S(delayMix);S(size);S(decay);S(tone);S(reverbMix);
   #undef S
-  auto& q=smooth;det.push((in[0]+in[1])*.5f*gain(q.input));float goal=0;detected=det.hz;
-  if(detected>0){float note=midi(detected);int n=nearest(note,p.key,p.scale,p.mask);if(targetNote!=n){targetNote=n;}target=440*std::pow(2.f,(n-69)/12.f);float diff=n-note;float tolerance=p.flex*.01f;if(std::abs(diff)>tolerance)goal=diff* q.amount*(p.character==1?1.f:1.f-p.human*.45f);}
-  else{target=0;targetNote=-1;}
-  float time=p.character==1?std::min(8.f,p.speed):p.speed;time=std::max(1.f,time+(goal*lastGoal<0?p.transition:0));lastGoal=goal;float desired=std::pow(2.f,goal/12.f);ratio+=(1-std::exp(-1000.f/(sr*time)))*(desired-ratio);correction=12*std::log2(ratio)*100;
+  auto& q=smooth;
+  const float mid=(in[0]+in[1])*.5f;
+  leftPower+=a*(in[0]*in[0]-leftPower);rightPower+=a*(in[1]*in[1]-rightPower);midPower+=a*(mid*mid-midPower);
+  const float strongest=std::max(leftPower,rightPower);
+  const float fallback=channels>1&&strongest>1e-8f?clamp(1-midPower/(.15f*strongest),0,1):0;
+  detectorBlend+=a*(fallback-detectorBlend);
+  const float side=leftPower>=rightPower*.9f?in[0]:in[1];
+  det.push((mid+(side-mid)*detectorBlend)*gain(q.input));float goal=0;detected=det.hz;
+  const int previous=targetNote;
+  if(detected>0&&scaleMask(p.scale,p.mask)!=0){
+   const float note=midi(detected);int n=nearest(note,p.key,p.scale,p.mask);
+   if(p.character==0&&previous>=0&&noteAllowed(previous,p.key,p.scale,p.mask)&&std::abs(note-previous)<=std::abs(note-n)+.12f)n=previous;
+   targetNote=n;target=440*std::pow(2.f,(n-69)/12.f);
+   const float diff=n-note,tolerance=p.flex*.01f;
+   goal=std::copysign(std::max(0.f,std::abs(diff)-tolerance),diff)*q.amount*(p.character==1?1.f:1.f-p.human*.45f);
+  }else{target=0;targetNote=-1;}
+  if(previous>=0&&targetNote>=0&&previous!=targetNote)transitionRemaining=int(sr*.001f*p.transition);
+  if(targetNote<0)transitionRemaining=0;
+  float time=p.character==1?std::min(8.f,p.speed):p.speed;
+  if(transitionRemaining>0){time=std::max(time,p.transition);--transitionRemaining;}
+  time=std::max(1.f,time);
+  const float desired=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);
+  ratio+=(1-std::exp(-1000.f/(sr*time)))*(desired-ratio);
+  correction=p.tune&&p.power?12*std::log2(ratio)*100:0;
   phase+=q.chorusRate/sr;phase-=std::floor(phase);
   for(int k=0;k<channels;++k){auto& c=ch[k];float x=in[k]*gain(q.input);c.dry.write(x);float dry=c.dry.read(c.pitch.window*.5f+2);float pitched=c.pitch.tick(x,p.tune?ratio:1);float y=p.tune&&std::abs(ratio-1)>.0005f?pitched:dry;
    // Prototype spectral colour proxy: not true independent formant shifting.
