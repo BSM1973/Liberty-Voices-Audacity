@@ -79,7 +79,7 @@ void VoicesEditor::mouseUp(const MouseEvent&){if(dragBand>=0)for(int k=0;k<2;++k
 bool VoicesEditor::qualitySnapshot(int pg,bool french,bool browserOpen,const File& file,StringArray& issues){
  p.french=french;showBrowser(false);switchPage(pg);layoutLanguage();if(browserOpen)showBrowser(true);
  std::vector<Component*> visible;
- auto collect=[&](Component& root){for(int i=0;i<root.getNumChildComponents();++i){auto* child=root.getChildComponent(i);if(!child->isVisible())continue;if(child==&presetPanel)continue;if(browserOpen&&child->getBounds().intersects(presetPanel.getBounds()))continue;visible.push_back(child);}};
+ auto collect=[&](Component& root){for(int i=0;i<root.getNumChildComponents();++i){auto* child=root.getChildComponent(i);if(!child->isVisible())continue;if(child==&presetPanel)continue;if(browserOpen&&(&root==this)&&child->getBounds().intersects(presetPanel.getBounds()))continue;visible.push_back(child);}};
  collect(*this);if(browserOpen)collect(presetPanel);
  for(size_t i=0;i<visible.size();++i){auto* a=visible[i];if(!a->getParentComponent()->getLocalBounds().contains(a->getBounds()))issues.add("Outside parent: "+a->getName()+" "+a->getBounds().toString());for(size_t j=i+1;j<visible.size();++j){auto* b=visible[j];if(a->getParentComponent()==b->getParentComponent()&&a->getBounds().intersects(b->getBounds()))issues.add("Overlap: "+a->getBounds().toString()+" / "+b->getBounds().toString());}}
  for(auto* c:visible){String s;if(auto* l=dynamic_cast<Label*>(c))s=l->getText();else if(auto* b=dynamic_cast<Button*>(c))s=b->getButtonText();else if(auto* b=dynamic_cast<ComboBox*>(c))s=b->getText();if(s.containsChar(juce_wchar(0xfffd)))issues.add("Invalid displayed replacement character");}
