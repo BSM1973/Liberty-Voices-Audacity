@@ -29,8 +29,13 @@ struct Detector {
   if(energy<.000002f*frameSize){hz=confidence=0;return;}
   const int lo=std::max(2,int(sr/900)),hi=std::min(300,int(sr/65)),span=frameSize-hi-1;
   std::array<float,302> cm{};float sum=0;cm[0]=1;
-  for(int t=1;t<=hi+1;++t){float diff=0;for(int i=0;i<span;++i){float a=frame[i]-frame[i+t];diff+=a*a;}sum+=diff;cm[t]=sum>1e-12f?diff*t/sum:1;}
-  int best=lo;for(int t=lo;t<=hi;++t){if(cm[t]<cm[best])best=t;if(cm[t]<.16f&&cm[t]<=cm[t+1]&&cm[t]<cm[t-1]){best=t;break;}}
+  int best=lo;bool found=false;
+  for(int t=1;t<=hi+1;++t){float diff=0;for(int i=0;i<span;++i){float a=frame[i]-frame[i+t];diff+=a*a;}sum+=diff;cm[t]=sum>1e-12f?diff*t/sum:1;
+   // The original search selects the first qualifying local minimum.
+   // Once its right neighbour is known, later lags cannot change that result.
+   if(t>lo){int j=t-1;if(cm[j]<cm[best])best=j;if(cm[j]<.16f&&cm[j]<=cm[j+1]&&cm[j]<cm[j-1]){best=j;found=true;break;}}
+  }
+  (void)found;
   confidence=clamp(1-cm[best],0,1);if(confidence<.72f){hz=0;return;}
   float delta=0,a=cm[best-1],b=cm[best],c=cm[best+1],den=a-2*b+c;if(std::abs(den)>1e-8f)delta=clamp(.5f*(a-c)/den,-.5f,.5f);
   hz=sr/(best+delta);
@@ -82,10 +87,10 @@ struct FormantEngine {
   average(logMag,tmp,radius);average(tmp,env,radius);
  }
  float tick(float ref,float signal,float semitones,float pitchRatio,float fundamental,bool enabled){
-  float out=ola[pos];ola[pos]=0;reference[pos]=ref;wet[pos]=signal;pos=(pos+1)%n;
+  float out=ola[pos];ola[pos]=0;reference[pos]=ref;wet[pos]=signal;pos=(pos+1)&(n-1);
   if(++count<hop)return out;count=0;
   const bool active=enabled&&(std::abs(semitones)>.01f||std::abs(pitchRatio-1)>.002f)&&fundamental>50;
-  for(int i=0;i<n;++i){int ix=(pos+i)%n;w[i]=Complex(wet[ix]*window[i],0);if(active)r[i]=Complex(reference[ix]*window[i],0);}
+  for(int i=0;i<n;++i){int ix=(pos+i)&(n-1);w[i]=Complex(wet[ix]*window[i],0);if(active)r[i]=Complex(reference[ix]*window[i],0);}
   fft(w,false);
   if(active){
    fft(r,false);const int radius=std::clamp(int(std::ceil(std::max(160.f,fundamental*1.1f)*n/sr)),2,n/12);
@@ -101,11 +106,11 @@ struct FormantEngine {
    }
   }else for(int i=0;i<=n/2;++i)gains[i]*=.65f;
   for(int i=0;i<=n/2;++i){float g=std::exp(gains[i]);w[i]*=g;if(i>0&&i<n/2)w[n-i]*=g;}
-  fft(w,true);for(int i=0;i<n;++i)ola[(pos+i)%n]+=.5f*window[i]*w[i].real();
+  fft(w,true);for(int i=0;i<n;++i)ola[(pos+i)&(n-1)]+=.5f*window[i]*w[i].real();
   return out;
  }
 };
-struct Pole {float z=0;float low(float x,float hz,float sr){float a=1-std::exp(-2*pi*clamp(hz,10,sr*.45f)/sr);z+=a*(x-z);return z;}};
+struct Pole {float z=0,lastHz=-1,lastSr=0,a=0;float low(float x,float hz,float sr){if(hz!=lastHz||sr!=lastSr){a=1-std::exp(-2*pi*clamp(hz,10,sr*.45f)/sr);lastHz=hz;lastSr=sr;}z+=a*(x-z);return z;}};
 // v0.6 studio dynamics. All stages default to bypass; no extra reported latency.
 struct StudioStrip {
  float sr=48000,low=0,env=0,highEnv=0,gateGain=1,compGain=1,levelGain=1,levelEnv=0,deGain=1;
