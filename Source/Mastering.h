@@ -1,11 +1,12 @@
 #pragma once
 #include "Dsp.h"
+#include "Precision.h"
 #include <cstdint>
 namespace voices {
-// Linked master processing. Limiter is sample-peak, not certified true peak.
+// Linked master processing. The final stage uses an experimental reconstructed-peak lookahead limiter.
 struct MasterParams {
  bool compressor=false,saturation=false,limiter=false,dynamicEq=false,external=false,power=true;
- int model=0,color=0;float threshold=-18,ratio=3,makeup=0,drive=4,mix=.25f,ceiling=-1,release=80;
+ int model=0,color=0,oversampling=0;float comparisonGain=1;float threshold=-18,ratio=3,makeup=0,drive=4,mix=.25f,ceiling=-1,release=80;
  std::array<float,6> freq{{2500,120,400,1000,5000,10000}},q{{1,1,1,1,1,1}},dynThreshold{{-24,-24,-24,-24,-24,-24}},dynRange{};
 };
 struct BandDetector {
@@ -18,8 +19,8 @@ struct MasterEngine {
  std::array<std::array<BandDetector,6>,2> detector;
  std::array<std::array<StudioBell,6>,2> filters;
  std::array<float,6> bandEnv{},bandGain{};
- float dynAttack=0,dynRelease=0;
- void prepare(float s){*this=MasterEngine{};sr=s;smooth=1-std::exp(-1/(sr*.008f));dynAttack=1-std::exp(-1/(sr*.008f));dynRelease=1-std::exp(-1/(sr*.09f));}
+ float dynAttack=0,dynRelease=0;std::array<std::array<SaturationOS,3>,2> os;std::array<std::array<float,16>,2> dry{};int dryWrite=0,osMode=0;float osFade=0,abGain=1,preEnergy=0,energyAlpha=0;PeakLookahead lookahead;int latency()const{return 16+lookahead.latency;}
+ void prepare(float s){*this=MasterEngine{};sr=s;smooth=1-std::exp(-1/(sr*.008f));dynAttack=1-std::exp(-1/(sr*.008f));dynRelease=1-std::exp(-1/(sr*.09f));energyAlpha=1-std::exp(-1/(sr*.4f));lookahead.prepare(sr);for(auto& c:os)for(int i=0;i<3;++i)c[i].prepare(2<<i);}
  static float shape(float x,int c){switch(c){case 1:return x/(1+std::abs(x));case 2:return std::tanh(x+.18f*x*x);default:return std::tanh(x);}}
  void tick(float& left,float& right,int channels,float external,const MasterParams& p){
   float x[2]={left,channels>1?right:left};
@@ -31,8 +32,13 @@ struct MasterEngine {
    for(int b=0;b<6;++b){bandEnv[b]+=(levels[b]>bandEnv[b]?dynAttack:dynRelease)*(levels[b]-bandEnv[b]);if(count==1){float db=20*std::log10(std::max(1e-6f,bandEnv[b]));float goal=p.dynRange[b]*clamp((db-p.dynThreshold[b])/12,0,1);bandGain[b]+=.25f*(goal-bandGain[b]);}}
    for(int k=0;k<channels;++k){float y=x[k];for(int b=0;b<6;++b)y=filters[k][b].tick(y);x[k]+=eqMix*(y-x[k]);}}
   if(compMix>.0001f){float v=p.external?std::abs(external):std::max(std::abs(x[0]),std::abs(x[channels-1]));env+=(v>env?atk:rel)*(v-env);float db=20*std::log10(std::max(1e-6f,env)),over=std::max(0.f,db-threshold);float slope=1-1/ratio;if(model==0||model==3)slope*=clamp(over/8,0,1);float goal=gain(-over*slope);compGain+=(goal<compGain?atk:rel)*(goal-compGain);for(int k=0;k<channels;++k)x[k]*=1+compMix*(compGain*makeup-1);}
-  if(satMix>.0001f)for(int k=0;k<channels;++k){float z=shape(x[k]*drive,color)/std::max(1.f,std::sqrt(drive));x[k]+=satMix*(z-x[k]);}
-  if(limMix>.0001f){float peak=std::max(std::abs(x[0]),std::abs(x[channels-1]));float goal=std::min(1.f,ceilGain/std::max(1e-9f,peak));limGain=goal<limGain?goal:limGain+limRel*(goal-limGain);for(int k=0;k<channels;++k)x[k]*=1+limMix*(limGain-1);}
+  int mode=std::clamp(p.oversampling,0,3);if(mode!=osMode){osMode=mode;osFade=0;if(mode)for(auto& c:os)c[mode-1].reset();}
+  const float norm=std::max(1.f,std::sqrt(drive));auto shaping=[&](float v){return shape(v*drive,color)/norm;};
+  for(int k=0;k<channels;++k){float v=dry[k][dryWrite];dry[k][dryWrite]=x[k];if(mode==0)x[k]=v+satMix*(shaping(v)-v);else{float wet=os[k][mode-1].tick(x[k],shaping);x[k]=v+satMix*osFade*(wet-v);}}
+  dryWrite=(dryWrite+1)%16;if(mode)osFade=std::min(1.f,osFade+1/(sr*.025f));
+  float e=0;for(int k=0;k<channels;++k)e+=x[k]*x[k]/channels;preEnergy+=energyAlpha*(e-preEnergy);
+  abGain+=smooth*((p.power?p.comparisonGain:1.f)-abGain);for(int k=0;k<channels;++k)x[k]*=abGain;
+  lookahead.tick(x[0],x[1],channels,p.power&&p.limiter,ceilGain,p.release);
   left=std::isfinite(x[0])?x[0]:0;if(channels>1)right=std::isfinite(x[1])?x[1]:0;
  }
 };
@@ -50,6 +56,6 @@ struct LoudnessMeter {
  static float db(double e){return float(-.691+10*std::log10(std::max(1e-12,e)));}
  void reset(){recent.fill(0);sums.fill(0);counts.fill(0);energy=0;samples=blocks=pos=0;momentary=integrated=-100;for(auto& f:shelf)f.z1=f.z2=0;for(auto& f:hp)f.z1=f.z2=0;}
  void prepare(double sr){hop=std::max(1,int(std::round(sr*.1)));for(auto& f:shelf)f.shelf(sr);for(auto& f:hp)f.highpass(sr);reset();}
- void tick(float l,float r,int ch){float in[]={l,r};for(int k=0;k<ch;++k){double x=hp[k].tick(shelf[k].tick(in[k]));energy+=x*x;}if(++samples<hop)return;recent[pos]=energy/hop;pos=(pos+1)%4;samples=0;energy=0;++blocks;if(blocks<4)return;double e=0;for(double v:recent)e+=v*.25;momentary=db(e);if(momentary>=-70){int b=std::clamp(int((momentary+70)*10),0,900);sums[b]+=e;++counts[b];}double total=0;std::uint64_t n=0;for(int i=0;i<=900;++i){total+=sums[i];n+=counts[i];}if(!n){integrated=-100;return;}float gate=std::max(-70.f,db(total/double(n))-10);total=0;n=0;for(int i=std::clamp(int(std::ceil((gate+70)*10)),0,900);i<=900;++i){total+=sums[i];n+=counts[i];}integrated=n?db(total/double(n)):-100;}
+ void tick(float l,float r,int ch){float in[]={l,r};for(int k=0;k<ch;++k){double x=hp[k].tick(shelf[k].tick(in[k]));energy+=x*x;}if(++samples<hop)return;recent[pos]=energy/hop;pos=(pos+1)%4;samples=0;energy=0;++blocks;if(blocks<4)return;double e=0;for(double v:recent)e+=v*.25;momentary=db(e);if(momentary>=-70){int b=std::clamp(int(std::round((momentary+70)*10)),0,900);sums[b]+=e;++counts[b];}double total=0;std::uint64_t n=0;for(int i=0;i<=900;++i){total+=sums[i];n+=counts[i];}if(!n){integrated=-100;return;}float gate=std::max(-70.f,db(total/double(n))-10);total=0;n=0;for(int i=std::clamp(int(std::ceil((gate+70)*10)),0,900);i<=900;++i){total+=sums[i];n+=counts[i];}integrated=n?db(total/double(n)):-100;}
 };
 }

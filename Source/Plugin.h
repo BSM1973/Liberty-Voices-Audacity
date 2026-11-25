@@ -9,7 +9,7 @@ public:
  using AP=juce::AudioProcessorValueTreeState;
  VoicesProcessor(); ~VoicesProcessor() override{stopTimer();} static AP::ParameterLayout layout();
  AP state{*this,nullptr,"VOICES_STATE",layout()};
- voices::Engine engine;voices::MasterEngine mastering;voices::LoudnessMeter loudness;std::atomic<float> lufsM{-100},lufsI{-100};std::atomic<bool> resetLoudness{false};
+ voices::Engine engine;voices::MasterEngine mastering;voices::LoudnessMeter loudness;std::atomic<float> lufsM{-100},lufsI{-100};std::atomic<bool> resetLoudness{false};std::atomic<float> compareGain{1},comparisonDb{-100},cpuMean{0},cpuPeak{0};std::atomic<int> comparisonSamples{0};std::atomic<bool> resetComparison{false};
  std::array<std::atomic<int>,std::size(voices::specs)> cc;std::atomic<int> learn{-1};
  std::atomic<float> detected{0},target{0},cents{0},vocalConfidence{0},vocalProtection{0},rangeLow{0},rangeHigh{0};std::atomic<int> vocalKind{0};std::array<std::atomic<float>,2> inPeak{},outPeak{};std::atomic<bool> inClip{false},outClip{false};
  std::atomic<bool> spectrumVisible{false};std::array<std::atomic<float>,96> spectrum{};

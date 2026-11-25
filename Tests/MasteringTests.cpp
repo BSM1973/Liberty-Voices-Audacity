@@ -3,7 +3,7 @@
 #include <cstdlib>
 void check(bool b,const char* label){if(!b){std::cerr<<label<<'\n';std::exit(1);}}
 int main(){using namespace voices;for(float sr:{44100.f,48000.f,96000.f}){
- MasterEngine m;m.prepare(sr);MasterParams p;float l=.7f,r=-.5f;m.tick(l,r,2,0,p);check(l==.7f&&r==-.5f,"master defaults neutral");
+ MasterEngine m;m.prepare(sr);MasterParams p;float l=.7f,r=-.5f;m.tick(l,r,2,0,p);check(l==0&&r==0,"master startup delay");for(int i=0;i<m.latency();++i){l=.7f;r=-.5f;m.tick(l,r,2,0,p);}check(l==.7f&&r==-.5f,"master delayed unity");
  for(int model=0;model<4;++model){m.prepare(sr);p=MasterParams{};p.compressor=true;p.model=model;p.threshold=-24;p.ratio=4;for(int i=0;i<int(sr*2);++i){l=.5f;r=.25f;m.tick(l,r,2,0,p);}check(l<.25f&&l>.01f&&std::abs(l-2*r)<1e-5f,"linked model attenuation");}
  m.prepare(sr);p=MasterParams{};p.limiter=true;p.ceiling=-3;for(int i=0;i<int(sr);++i){l=2;r=.5f;m.tick(l,r,2,0,p);}check(std::abs(l)<=gain(-3)+1e-4f&&std::abs(l-4*r)<1e-5f,"sample peak ceiling and link");
  m.prepare(sr);p=MasterParams{};p.compressor=true;p.external=true;p.threshold=-24;for(int i=0;i<int(sr*2);++i){l=.1f;r=.1f;m.tick(l,r,2,.8f,p);}check(l<.07f,"external detector");

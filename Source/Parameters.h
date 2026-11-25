@@ -66,7 +66,7 @@ inline constexpr Spec specs[]={
 {"dynThreshold5","Threshold 5","Seuil 5",-60,0,-24,0.1," dB"},
 {"dynRange5","Range 5","Plage 5",-12,12,0,0.1," dB"},
 {"dynThreshold6","Threshold 6","Seuil 6",-60,0,-24,0.1," dB"},
-{"dynRange6","Range 6","Plage 6",-12,12,0,0.1," dB"}};
+{"dynRange6","Range 6","Plage 6",-12,12,0,0.1," dB"},{"masterOS","Oversampling","Suréchant.",0,3,0,1,""}};
 inline constexpr const char* switches[]={"power","tune","sat","eq","doubler","chorus","delay","reverb","sync","gate","deess","compress","autolevel","harmony","bell","harmonyMidi","diatonic","multiband","plosive","masterComp","masterSat","masterLimit","externalSC","dynamicEq"};
 inline constexpr const char* notes[]={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
 inline constexpr const char* categories[]={"Natural Correction","Pop Lead","Modern Pop","R&B","Rap and Hip-Hop","Rock Vocals","Electronic and Robotic","Harmonies and Doubles","Voice-Over","Creative Effects"};
