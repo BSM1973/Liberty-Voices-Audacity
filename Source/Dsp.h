@@ -55,7 +55,7 @@ struct FormantEngine {
  using Complex=std::complex<float>;
  std::array<float,maxN> reference{},wet{},ola{},window{};
  std::array<Complex,maxN> r{},w{};
- std::array<Complex,maxN/2> roots{};
+ std::array<Complex,maxN/2> roots{};std::array<int,maxN> reverse{};
  std::array<float,maxBins> logRef{},logWet{},envRef{},envWet{},tmp{},gains{};
  std::array<float,maxBins+1> prefix{};
  int n=1024,hop=256,pos=0,count=0;float sr=48000;
@@ -63,10 +63,11 @@ struct FormantEngine {
   sr=sampleRate;n=sr>64000?2048:1024;hop=n/4;pos=count=0;
   reference.fill(0);wet.fill(0);ola.fill(0);gains.fill(0);
   for(int i=0;i<n;++i)window[i]=std::sqrt(std::max(0.f,.5f-.5f*std::cos(2*pi*i/n)));
+  for(int i=0,j=0;i<n;++i){reverse[i]=j;int bit=n>>1;for(;bit&&(j&bit);bit>>=1)j^=bit;j^=bit;}
   for(int i=0;i<n/2;++i)roots[i]=Complex(std::cos(-2*pi*i/n),std::sin(-2*pi*i/n));
  }
  void fft(std::array<Complex,maxN>& a,bool inverse)const{
-  for(int i=1,j=0;i<n;++i){int bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j)std::swap(a[i],a[j]);}
+  for(int i=1;i<n;++i){int j=reverse[i];if(i<j)std::swap(a[i],a[j]);}
   for(int len=2;len<=n;len*=2){int half=len/2,step=n/len;for(int i=0;i<n;i+=len)for(int j=0;j<half;++j){auto root=roots[j*step];if(inverse)root=std::conj(root);auto u=a[i+j],v=a[i+j+half]*root;a[i+j]=u+v;a[i+j+half]=u-v;}}
   if(inverse)for(int i=0;i<n;++i)a[i]/=float(n);
  }
@@ -129,10 +130,30 @@ struct StudioBell {
  void configure(float sr,float hz,float db,float q){float w=2*pi*clamp(hz,30,sr*.45f)/sr,A=std::pow(10.f,db/40),alpha=std::sin(w)/(2*std::max(.2f,q)),c=std::cos(w),a0=1+alpha/A;b0=(1+alpha*A)/a0;b1=-2*c/a0;b2=(1-alpha*A)/a0;a1=b1;a2=(1-alpha/A)/a0;}
  float tick(float x){float y=b0*x+z1;z1=b1*x-a1*y+z2;z2=b2*x-a2*y;return y;}
 };
+// Diatonic target: transpose chromatically, then select the nearest allowed
+// scale note; ties prefer the direction of the requested interval.
+inline int harmonyTarget(int source,int interval,int key,int scale,unsigned mask){
+ int target=source+interval;if(!scaleMask(scale,mask))return target;
+ for(int dist=0;dist<=12;++dist){int a=target+(interval<0?-dist:dist),b=target+(interval<0?dist:-dist);if(noteAllowed(a,key,scale,mask))return a;if(noteAllowed(b,key,scale,mask))return b;}return target;
+}
+struct MultibandVocal {
+ float low=0,upper=0,plow=0,pfast=0,pslow=0,pg=0,aLow=0,aHigh=0,aPlow=0,attack=0,release=0,slow=0;
+ std::array<float,3> env{},g{{1,1,1}};
+ void prepare(float sr){*this=MultibandVocal{};aLow=1-std::exp(-2*pi*250/sr);aHigh=1-std::exp(-2*pi*3500/sr);aPlow=1-std::exp(-2*pi*150/sr);attack=1-std::exp(-1/(sr*.003f));release=1-std::exp(-1/(sr*.08f));slow=1-std::exp(-1/(sr*.12f));}
+ float tick(float x,float mix,const std::array<float,3>& threshold,float ratio,float plosive,float amount){
+  if(plosive>.0001f){plow+=aPlow*(x-plow);float v=std::abs(plow);pfast+=attack*(v-pfast);pslow+=slow*(v-pslow);float detect=clamp((pfast-2.5f*pslow-.012f)*18.f,0,1);pg+=(detect>pg?attack:release)*(detect-pg);x-=plow*pg*amount*plosive;}
+  if(mix<.0001f)return x;low+=aLow*(x-low);upper+=aHigh*(x-upper);const float bands[]={low,upper-low,x-upper};float y=0;
+  for(int i=0;i<3;++i){float v=std::abs(bands[i]);env[i]+=(v>env[i]?attack:release)*(v-env[i]);float db=20*std::log10(std::max(env[i],1e-6f));float goal=gain(-std::max(0.f,db-threshold[i])*(1-1/std::max(1.f,ratio)));g[i]+=(goal<g[i]?attack:release)*(goal-g[i]);y+=bands[i]*g[i];}return x+mix*(y-x);
+ }
+};
 struct Params {
  float input=0,output=0,mix=1,speed=35,human=.45f,flex=8,transition=35,amount=1,formant=0,drive=4,satMix=.25f,hp=70,body=0,presence=0,air=0,doubleAmount=.2f,spread=.7f,detune=7,chorusRate=.35f,chorusDepth=3,chorusMix=.15f,delayMs=280,feedback=.22f,delayMix=.12f,size=.35f,decay=.42f,tone=6500,reverbMix=.12f;
  float gateThreshold=-48,gateRange=30,deThreshold=-24,deHz=6500,compThreshold=-18,compRatio=3,makeup=0,autoTarget=-20,harmMix=.25f,interval1=4,interval2=7,interval3=12,interval4=-12,bellHz=2500,bellGain=0,bellQ=1;
  bool gate=false,deess=false,compress=false,autolevel=false,harmony=false,bell=false,harmonyMidi=false;
+ bool diatonic=false,multiband=false,plosive=false;
+ std::array<float,4> voiceGain{{100,100,100,100}},voicePan{},voiceFormant{};
+ std::array<float,5> eqHz{{120,400,1000,5000,10000}},eqGain{},eqQ{{1,1,1,1,1}};
+ std::array<float,3> mbThreshold{{-18,-18,-18}};float mbRatio=3,plosiveAmount=.65f;
  std::array<int,4> harmonyNotes{{-1,-1,-1,-1}};
  int key=0,scale=0,character=0;unsigned mask=4095; bool power=true,tune=true,sat=false,eq=true,doubler=false,chorus=false,delay=false,reverb=false;
 };
@@ -182,20 +203,20 @@ struct VocalIntelligence {
  }
 };
 struct Engine {
- struct Channel {Shifter pitch,dub,dubOther;FormantEngine formants;Delay dry,alignedDry,chor,echo;VocalRoom room;Pole hp,body,pres,air;float pitchBlend=0;StudioStrip strip;StudioBell bell;std::array<Shifter,4> harmonies;};
- std::array<Channel,2> ch; Detector det; VocalIntelligence intelligence;float smoothAlpha=0; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};std::array<float,6> studioEnabled{};std::array<float,4> harmonyRatios{{1,1,1,1}},harmonyLevels{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
+ struct Channel {Shifter pitch,dub,dubOther;FormantEngine formants;Delay dry,alignedDry,chor,echo;VocalRoom room;Pole hp,body,pres,air;float pitchBlend=0;StudioStrip strip;StudioBell bell;std::array<StudioBell,5> extraBell;MultibandVocal multiband;std::array<Shifter,4> harmonies;std::vector<FormantEngine> harmonyFormants;};
+ std::array<Channel,2> ch; Detector det; VocalIntelligence intelligence;float smoothAlpha=0; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};std::array<float,8> studioEnabled{};std::array<float,4> voiceWeightL{},voiceWeightR{};std::array<float,4> harmonyRatios{{1,1,1,1}},harmonyLevels{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
  int latency(bool isLive)const{return int(std::round(sr*(isLive?.004f:.01f)))+1+(isLive?0:ch[0].formants.n);}
  int latency()const{return latency(live);}
  void setMode(bool mode){if(live==mode)return;live=mode;fade=0;for(auto& c:ch){c.pitch.window=float(2*(latency(mode)-1-(mode?0:c.formants.n)));c.pitch.phase=0;c.pitchBlend=0;c.formants.prepare(sr);std::fill(c.alignedDry.buf.begin(),c.alignedDry.buf.end(),0.f);c.alignedDry.w=0;}}
- void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);studioEnabled.fill(0);harmonyLevels.fill(0);harmonyRatios.fill(1);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);c.strip.prepare(sr);for(auto& voice:c.harmonies)voice.prepare(sr);}}
+ void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);studioEnabled.fill(0);harmonyLevels.fill(0);harmonyRatios.fill(1);voiceWeightL.fill(1);voiceWeightR.fill(1);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);c.strip.prepare(sr);for(auto& voice:c.harmonies)voice.prepare(sr);c.multiband.prepare(sr);c.harmonyFormants.resize(4);for(auto& f:c.harmonyFormants)f.prepare(sr);}}
  void tick(float* l,float* r,int channels,const Params& p){
   float in[2]={*l,channels>1?*r:*l}; const std::array<bool,8> switches={p.power,p.tune,p.sat,p.eq,p.doubler,p.chorus,p.delay,p.reverb};if(first){smooth=p;for(int i=0;i<8;++i)enabled[i]=switches[i]?1.f:0.f;first=false;} const float a=smoothAlpha;for(int i=0;i<8;++i)enabled[i]+=a*((switches[i]?1.f:0.f)-enabled[i]);fade=std::min(1.f,fade+1.f/(sr*.012f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)
   S(input);S(output);S(mix);S(speed);S(human);S(flex);S(transition);S(amount);S(formant);S(drive);S(satMix);S(hp);S(body);S(presence);S(air);S(doubleAmount);S(spread);S(detune);S(chorusRate);S(chorusDepth);S(chorusMix);S(delayMs);S(feedback);S(delayMix);S(size);S(decay);S(tone);S(reverbMix);
   #undef S
   auto& q=smooth;
-  const std::array<bool,6> studioSwitches={p.gate,p.deess,p.compress,p.autolevel,p.harmony,p.bell};
- for(int i=0;i<6;++i)studioEnabled[i]+=a*((studioSwitches[i]?1.f:0.f)-studioEnabled[i]);
+  const std::array<bool,8> studioSwitches={p.gate,p.deess,p.compress,p.autolevel,p.harmony,p.bell,p.multiband,p.plosive};
+ for(int i=0;i<8;++i)studioEnabled[i]+=a*((studioSwitches[i]?1.f:0.f)-studioEnabled[i]);
  const float mid=(in[0]+in[1])*.5f;
   leftPower+=a*(in[0]*in[0]-leftPower);rightPower+=a*(in[1]*in[1]-rightPower);midPower+=a*(mid*mid-midPower);
   const float strongest=std::max(leftPower,rightPower);
@@ -223,8 +244,8 @@ struct Engine {
   desiredRatio=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);ratioAlpha=1-std::exp(-1000.f/(sr*time));}
   if(control==1){
    const float intervals[]={p.interval1,p.interval2,p.interval3,p.interval4};
-   if(p.harmony||studioEnabled[4]>.0001f)for(int i=0;i<4;++i){float steps=intervals[i];if(p.harmonyMidi&&detected>50&&p.harmonyNotes[i]>=0)steps=float(p.harmonyNotes[i])-midi(detected);harmonyRatios[i]=std::pow(2.f,clamp(steps,-24,24)/12.f);}
-   if(p.bell||studioEnabled[5]>.0001f)for(auto& c:ch)c.bell.configure(sr,p.bellHz,p.bellGain,p.bellQ);
+   if(p.harmony||studioEnabled[4]>.0001f)for(int i=0;i<4;++i){float steps=intervals[i];if(detected>50){float source=midi(detected)+(p.tune?12*std::log2(ratio)*(1-intelligence.protection):0);if(p.harmonyMidi&&p.harmonyNotes[i]>=0)steps=float(p.harmonyNotes[i])-source;else if(p.diatonic)steps=float(harmonyTarget(int(std::round(source)),int(intervals[i]),p.key,p.scale,p.mask))-source;}harmonyRatios[i]=std::pow(2.f,clamp(steps,-24,24)/12.f);voiceWeightL[i]=p.voiceGain[i]*.01f*std::sqrt(1-clamp(p.voicePan[i]*.01f,-1,1));voiceWeightR[i]=p.voiceGain[i]*.01f*std::sqrt(1+clamp(p.voicePan[i]*.01f,-1,1));}
+   if(p.bell||studioEnabled[5]>.0001f)for(auto& c:ch){c.bell.configure(sr,p.bellHz,p.bellGain,p.bellQ);for(int j=0;j<5;++j)c.extraBell[j].configure(sr,p.eqHz[j],p.eqGain[j],p.eqQ[j]);}
   }
   if(p.harmony||studioEnabled[4]>.0001f)for(int i=0;i<4;++i){const bool valid=detected>50&&(!p.harmonyMidi||p.harmonyNotes[i]>=0);harmonyLevels[i]+=a*((valid?1.f:0.f)-harmonyLevels[i]);}
   ratio+=ratioAlpha*(desiredRatio-ratio);
@@ -240,9 +261,10 @@ struct Engine {
    c.pitchBlend+=a*(blend-c.pitchBlend);float y=dry+(pitched-dry)*c.pitchBlend*(1-intelligence.protection);
    if(!live){y=c.formants.tick(dry,y,q.formant*enabled[1],ratio,detected,enabled[1]>.001f&&enabled[0]>.001f&&intelligence.protection<.5f);c.alignedDry.write(raw);raw=c.alignedDry.read(float(c.formants.n+1));dry=raw*inputGain;}
    // Parallel harmonies follow the detected vocal; release on unvoiced input.
-   if(studioEnabled[4]>.0001f){float sum=0;for(int i=0;i<4;++i)sum+=c.harmonies[i].tick(y,harmonyRatios[i])*harmonyLevels[i];y+=sum*.25f*p.harmMix*studioEnabled[4]*(1-intelligence.protection);}
+   if(studioEnabled[4]>.0001f){float sum=0;for(int i=0;i<4;++i){float v=c.harmonies[i].tick(y,harmonyRatios[i]);if(!live&&std::abs(p.voiceFormant[i])>.01f)v=c.harmonyFormants[i].tick(y,v,p.voiceFormant[i],1,detected,detected>50);float w=channels==1?p.voiceGain[i]*.01f:(k==0?voiceWeightL[i]:voiceWeightR[i]);sum+=v*harmonyLevels[i]*w;}y+=sum*.25f*p.harmMix*studioEnabled[4]*(1-intelligence.protection);}
    if(studioEnabled[0]+studioEnabled[1]+studioEnabled[2]+studioEnabled[3]>.0001f)y=c.strip.tick(y,studioEnabled[0],p.gateThreshold,p.gateRange,studioEnabled[1],p.deThreshold,p.deHz,studioEnabled[2],p.compThreshold,p.compRatio,p.makeup,studioEnabled[3],p.autoTarget);
-   if(studioEnabled[5]>.0001f){float z=c.bell.tick(y);y+=(z-y)*studioEnabled[5];}
+   if(studioEnabled[5]>.0001f){float z=c.bell.tick(y);for(int j=0;j<5;++j)z=c.extraBell[j].tick(z);y+=(z-y)*studioEnabled[5];}
+   if(studioEnabled[6]+studioEnabled[7]>.0001f)y=c.multiband.tick(y,studioEnabled[6],p.mbThreshold,p.mbRatio,studioEnabled[7],p.plosiveAmount);
    y+=(std::tanh(y*driveGain)/std::max(1.f,std::sqrt(driveGain))-y)*q.satMix*enabled[2];
    float eqY=y-c.hp.low(y,q.hp,sr);float b=c.body.low(eqY,400,sr),m=c.pres.low(eqY,3500,sr),hi=eqY-c.air.low(eqY,9000,sr);
    eqY+=b*bodyGain+(m-b)*presGain+hi*airGain;y+=(eqY-y)*enabled[3];
