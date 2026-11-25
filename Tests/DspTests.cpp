@@ -103,4 +103,13 @@ for(bool live:{false,true})for(int block:{32,64,128,256}){
  std::vector<double> timings;timings.reserve(48000/block);double total=0,peak=0;int frames=0;
  for(int start=0;start+block<=48000;start+=block){auto t0=std::chrono::steady_clock::now();for(int j=0;j<block;++j){int i=start+j;float x=.12f*std::sin(2*pi*225*i/48000)+.06f*std::sin(2*pi*450*i/48000),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y),"full chain benchmark finite");}double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();timings.push_back(elapsed);total+=elapsed;peak=std::max(peak,elapsed);frames+=block;}
  std::sort(timings.begin(),timings.end());std::cout<<"FULL_LOAD "<<(live?"Live":"Studio")<<" block="<<block<<" mean="<<100*total/(frames/48000.)<<"% p99="<<100*timings[size_t(.99*(timings.size()-1))]/(block/48000.)<<"% max="<<100*peak/(block/48000.)<<"%\n";
+}for(double sr:{44100.,48000.,96000.}){
+ StudioStrip strip;strip.prepare(float(sr));float loud=0;for(int i=0;i<int(sr);++i)loud=strip.tick(.5f,0,-48,30,0,-24,6500,1,-24,4,0,0,-20);
+ check(loud<.2f&&loud>.001f,"studio compressor attenuates");
+ strip.prepare(float(sr));float quiet=0;for(int i=0;i<int(sr);++i)quiet=strip.tick(.001f,1,-40,30,0,-24,6500,0,-18,3,0,0,-20);
+ check(quiet<.0001f,"studio expander attenuates");
+ StudioBell bell;bell.configure(float(sr),2000,6,1);double energy=0;for(int i=0;i<int(sr);++i){float x=.1f*std::sin(2*pi*2000*i/sr),y=bell.tick(x);if(i>sr*.5)energy+=y*y;}
+ check(energy/(sr*.5)>.015,"parametric bell boosts centre");
+ Engine e;e.prepare(sr);Params p;p.gate=p.deess=p.compress=p.autolevel=p.harmony=p.bell=true;p.bellGain=4;
+ for(int i=0;i<int(sr*.5);++i){float x=.15f*std::sin(2*pi*225*i/sr),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<4&&std::abs(y)<4,"studio chain finite");}
 }check(noteAllowed(60,0,1,4095)&&!noteAllowed(61,0,1,4095),"scale membership");check(nearest(61,0,1,4095)!=61,"C major");check(nearest(61,0,6,1)==60,"custom mask");std::cout<<"DSP tests passed: 3 sample rates, 12 tone detections, silence, finite chain, bypass, scales, harmonic onset, DC, stereo phase, correction and empty mask\n";}

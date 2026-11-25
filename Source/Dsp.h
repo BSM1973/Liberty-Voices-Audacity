@@ -105,8 +105,35 @@ struct FormantEngine {
  }
 };
 struct Pole {float z=0;float low(float x,float hz,float sr){float a=1-std::exp(-2*pi*clamp(hz,10,sr*.45f)/sr);z+=a*(x-z);return z;}};
+// v0.6 studio dynamics. All stages default to bypass; no extra reported latency.
+struct StudioStrip {
+ float sr=48000,low=0,env=0,highEnv=0,gateGain=1,compGain=1,levelGain=1,levelEnv=0,deGain=1;
+ float atk=0,rel=0,slow=0,fast=0;
+ void prepare(float rate){*this=StudioStrip{};sr=rate;atk=1-std::exp(-1.f/(sr*.003f));rel=1-std::exp(-1.f/(sr*.08f));slow=1-std::exp(-1.f/(sr*.5f));fast=1-std::exp(-1.f/(sr*.015f));}
+ float follow(float e,float v)const{return e+(v>e?atk:rel)*(v-e);}
+ float tick(float x,float gateOn,float gateThreshold,float gateRange,float deOn,float deThreshold,float deHz,float compOn,float compThreshold,float compRatio,float makeup,float autoOn,float autoTarget){
+  env=follow(env,std::abs(x));const float db=20*std::log10(std::max(env,1e-6f));
+  const float gg=gain(-clamp((gateThreshold-db)*1.5f,0,gateRange));gateGain+=fast*(gg-gateGain);x*=1+gateOn*(gateGain-1);
+  const float pole=1-std::exp(-2*pi*clamp(deHz,1000,sr*.43f)/sr);
+  low+=pole*(x-low);const float high=x-low;highEnv=follow(highEnv,std::abs(high));
+  const float hd=20*std::log10(std::max(highEnv,1e-6f));
+  const float dg=gain(-clamp((hd-deThreshold)*.7f,0,12));deGain+=fast*(dg-deGain);x+=deOn*high*(deGain-1);
+  const float cg=gain(-std::max(0.f,db-compThreshold)*(1-1/std::max(1.f,compRatio))+makeup);compGain+=fast*(cg-compGain);x*=1+compOn*(compGain-1);
+  levelEnv+=slow*(std::abs(x)-levelEnv);
+  const float ld=20*std::log10(std::max(levelEnv,1e-6f));
+  const float ag=ld>-50?gain(clamp(autoTarget-ld,-12,12)):1.f;levelGain+=slow*(ag-levelGain);return x*(1+autoOn*(levelGain-1));
+ }
+};
+struct StudioBell {
+ float b0=1,b1=0,b2=0,a1=0,a2=0,z1=0,z2=0;
+ void configure(float sr,float hz,float db,float q){float w=2*pi*clamp(hz,30,sr*.45f)/sr,A=std::pow(10.f,db/40),alpha=std::sin(w)/(2*std::max(.2f,q)),c=std::cos(w),a0=1+alpha/A;b0=(1+alpha*A)/a0;b1=-2*c/a0;b2=(1-alpha*A)/a0;a1=b1;a2=(1-alpha/A)/a0;}
+ float tick(float x){float y=b0*x+z1;z1=b1*x-a1*y+z2;z2=b2*x-a2*y;return y;}
+};
 struct Params {
  float input=0,output=0,mix=1,speed=35,human=.45f,flex=8,transition=35,amount=1,formant=0,drive=4,satMix=.25f,hp=70,body=0,presence=0,air=0,doubleAmount=.2f,spread=.7f,detune=7,chorusRate=.35f,chorusDepth=3,chorusMix=.15f,delayMs=280,feedback=.22f,delayMix=.12f,size=.35f,decay=.42f,tone=6500,reverbMix=.12f;
+ float gateThreshold=-48,gateRange=30,deThreshold=-24,deHz=6500,compThreshold=-18,compRatio=3,makeup=0,autoTarget=-20,harmMix=.25f,interval1=4,interval2=7,interval3=12,interval4=-12,bellHz=2500,bellGain=0,bellQ=1;
+ bool gate=false,deess=false,compress=false,autolevel=false,harmony=false,bell=false,harmonyMidi=false;
+ std::array<int,4> harmonyNotes{{-1,-1,-1,-1}};
  int key=0,scale=0,character=0;unsigned mask=4095; bool power=true,tune=true,sat=false,eq=true,doubler=false,chorus=false,delay=false,reverb=false;
 };
 struct VocalRoom {
@@ -155,19 +182,21 @@ struct VocalIntelligence {
  }
 };
 struct Engine {
- struct Channel {Shifter pitch,dub,dubOther;FormantEngine formants;Delay dry,alignedDry,chor,echo;VocalRoom room;Pole hp,body,pres,air;float pitchBlend=0;};
- std::array<Channel,2> ch; Detector det; VocalIntelligence intelligence;float smoothAlpha=0; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
+ struct Channel {Shifter pitch,dub,dubOther;FormantEngine formants;Delay dry,alignedDry,chor,echo;VocalRoom room;Pole hp,body,pres,air;float pitchBlend=0;StudioStrip strip;StudioBell bell;std::array<Shifter,4> harmonies;};
+ std::array<Channel,2> ch; Detector det; VocalIntelligence intelligence;float smoothAlpha=0; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};std::array<float,6> studioEnabled{};std::array<float,4> harmonyRatios{{1,1,1,1}},harmonyLevels{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
  int latency(bool isLive)const{return int(std::round(sr*(isLive?.004f:.01f)))+1+(isLive?0:ch[0].formants.n);}
  int latency()const{return latency(live);}
  void setMode(bool mode){if(live==mode)return;live=mode;fade=0;for(auto& c:ch){c.pitch.window=float(2*(latency(mode)-1-(mode?0:c.formants.n)));c.pitch.phase=0;c.pitchBlend=0;c.formants.prepare(sr);std::fill(c.alignedDry.buf.begin(),c.alignedDry.buf.end(),0.f);c.alignedDry.w=0;}}
- void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);}}
+ void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);studioEnabled.fill(0);harmonyLevels.fill(0);harmonyRatios.fill(1);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);c.strip.prepare(sr);for(auto& voice:c.harmonies)voice.prepare(sr);}}
  void tick(float* l,float* r,int channels,const Params& p){
   float in[2]={*l,channels>1?*r:*l}; const std::array<bool,8> switches={p.power,p.tune,p.sat,p.eq,p.doubler,p.chorus,p.delay,p.reverb};if(first){smooth=p;for(int i=0;i<8;++i)enabled[i]=switches[i]?1.f:0.f;first=false;} const float a=smoothAlpha;for(int i=0;i<8;++i)enabled[i]+=a*((switches[i]?1.f:0.f)-enabled[i]);fade=std::min(1.f,fade+1.f/(sr*.012f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)
   S(input);S(output);S(mix);S(speed);S(human);S(flex);S(transition);S(amount);S(formant);S(drive);S(satMix);S(hp);S(body);S(presence);S(air);S(doubleAmount);S(spread);S(detune);S(chorusRate);S(chorusDepth);S(chorusMix);S(delayMs);S(feedback);S(delayMix);S(size);S(decay);S(tone);S(reverbMix);
   #undef S
   auto& q=smooth;
-  const float mid=(in[0]+in[1])*.5f;
+  const std::array<bool,6> studioSwitches={p.gate,p.deess,p.compress,p.autolevel,p.harmony,p.bell};
+ for(int i=0;i<6;++i)studioEnabled[i]+=a*((studioSwitches[i]?1.f:0.f)-studioEnabled[i]);
+ const float mid=(in[0]+in[1])*.5f;
   leftPower+=a*(in[0]*in[0]-leftPower);rightPower+=a*(in[1]*in[1]-rightPower);midPower+=a*(mid*mid-midPower);
   const float strongest=std::max(leftPower,rightPower);
   const float fallback=channels>1&&strongest>1e-8f?clamp(1-midPower/(.15f*strongest),0,1):0;
@@ -192,6 +221,12 @@ struct Engine {
   if(transitionRemaining>0){time=std::max(time,p.transition);transitionRemaining=std::max(0,transitionRemaining-16);}
   time=std::max(1.f,time);
   desiredRatio=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);ratioAlpha=1-std::exp(-1000.f/(sr*time));}
+  if(control==1){
+   const float intervals[]={p.interval1,p.interval2,p.interval3,p.interval4};
+   for(int i=0;i<4;++i){float steps=intervals[i];if(p.harmonyMidi&&detected>50&&p.harmonyNotes[i]>=0)steps=float(p.harmonyNotes[i])-midi(detected);harmonyRatios[i]=std::pow(2.f,clamp(steps,-24,24)/12.f);}
+   for(auto& c:ch)c.bell.configure(sr,p.bellHz,p.bellGain,p.bellQ);
+  }
+  for(int i=0;i<4;++i){const bool valid=detected>50&&(!p.harmonyMidi||p.harmonyNotes[i]>=0);harmonyLevels[i]+=a*((valid?1.f:0.f)-harmonyLevels[i]);}
   ratio+=ratioAlpha*(desiredRatio-ratio);
   correction=p.tune&&p.power?12*std::log2(ratio)*100*(1-intelligence.protection):0;
   phase+=q.chorusRate/sr;phase-=std::floor(phase);
@@ -204,6 +239,10 @@ struct Engine {
    float blend=enabled[1]*clamp(std::abs(ratio-1)/.002f,0,1);
    c.pitchBlend+=a*(blend-c.pitchBlend);float y=dry+(pitched-dry)*c.pitchBlend*(1-intelligence.protection);
    if(!live){y=c.formants.tick(dry,y,q.formant*enabled[1],ratio,detected,enabled[1]>.001f&&enabled[0]>.001f&&intelligence.protection<.5f);c.alignedDry.write(raw);raw=c.alignedDry.read(float(c.formants.n+1));dry=raw*inputGain;}
+   // Parallel harmonies follow the detected vocal; release on unvoiced input.
+   if(studioEnabled[4]>.0001f){float sum=0;for(int i=0;i<4;++i)sum+=c.harmonies[i].tick(y,harmonyRatios[i])*harmonyLevels[i];y+=sum*.25f*p.harmMix*studioEnabled[4]*(1-intelligence.protection);}
+   if(studioEnabled[0]+studioEnabled[1]+studioEnabled[2]+studioEnabled[3]>.0001f)y=c.strip.tick(y,studioEnabled[0],p.gateThreshold,p.gateRange,studioEnabled[1],p.deThreshold,p.deHz,studioEnabled[2],p.compThreshold,p.compRatio,p.makeup,studioEnabled[3],p.autoTarget);
+   if(studioEnabled[5]>.0001f){float z=c.bell.tick(y);y+=(z-y)*studioEnabled[5];}
    y+=(std::tanh(y*driveGain)/std::max(1.f,std::sqrt(driveGain))-y)*q.satMix*enabled[2];
    float eqY=y-c.hp.low(y,q.hp,sr);float b=c.body.low(eqY,400,sr),m=c.pres.low(eqY,3500,sr),hi=eqY-c.air.low(eqY,9000,sr);
    eqY+=b*bodyGain+(m-b)*presGain+hi*airGain;y+=(eqY-y)*enabled[3];

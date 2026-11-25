@@ -20,5 +20,5 @@ public:
  void getStateInformation(juce::MemoryBlock&)override;void setStateInformation(const void*,int)override;
  float value(const char* id)const{return state.getRawParameterValue(id)->load();}void set(const char* id,float v);void load(int);juce::File presetDir()const;
 public:std::atomic<bool> activeLive{false},transportPlaying{false};std::atomic<int> latencyStudio{0},latencyLive{0};
-private:double sampleRate=48000;void timerCallback()override;
+private:std::array<std::array<bool,128>,16> heldNotes{};double sampleRate=48000;void timerCallback()override;
 };
