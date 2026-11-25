@@ -130,11 +130,17 @@ struct StudioBell {
  void configure(float sr,float hz,float db,float q){float w=2*pi*clamp(hz,30,sr*.45f)/sr,A=std::pow(10.f,db/40),alpha=std::sin(w)/(2*std::max(.2f,q)),c=std::cos(w),a0=1+alpha/A;b0=(1+alpha*A)/a0;b1=-2*c/a0;b2=(1-alpha*A)/a0;a1=b1;a2=(1-alpha/A)/a0;}
  float tick(float x){float y=b0*x+z1;z1=b1*x-a1*y+z2;z2=b2*x-a2*y;return y;}
 };
-// Diatonic target: transpose chromatically, then select the nearest allowed
-// scale note; ties prefer the direction of the requested interval.
+// Musical thirds and fifths follow scale degrees in seven-note scales.
 inline int harmonyTarget(int source,int interval,int key,int scale,unsigned mask){
- int target=source+interval;if(!scaleMask(scale,mask))return target;
- for(int dist=0;dist<=12;++dist){int a=target+(interval<0?-dist:dist),b=target+(interval<0?dist:-dist);if(noteAllowed(a,key,scale,mask))return a;if(noteAllowed(b,key,scale,mask))return b;}return target;
+ unsigned allowed=scaleMask(scale,mask);if(!allowed||scale==0)return source+interval;
+ if(!noteAllowed(source,key,scale,mask))source=nearest(float(source),key,scale,mask);
+ int size=0;for(int i=0;i<12;++i)if(allowed&(1u<<i))++size;
+ int steps=-1,mag=std::abs(interval),direction=interval<0?-1:1;
+ if(mag==0)return source;if(mag==12)return source+interval;
+ if(size==7&&(mag==3||mag==4))steps=2;
+ if(size==7&&mag==7)steps=4;
+ if(steps>=0){int note=source;for(int i=0;i<steps;++i){do{note+=direction;}while(!noteAllowed(note,key,scale,mask));}return note;}
+ int target=source+interval;for(int dist=0;dist<=12;++dist){int a=target+direction*dist,b=target-direction*dist;if(noteAllowed(a,key,scale,mask))return a;if(noteAllowed(b,key,scale,mask))return b;}return target;
 }
 struct MultibandVocal {
  float low=0,upper=0,plow=0,pfast=0,pslow=0,pg=0,aLow=0,aHigh=0,aPlow=0,attack=0,release=0,slow=0;
