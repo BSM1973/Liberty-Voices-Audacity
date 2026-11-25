@@ -1,0 +1,5 @@
+#include "../Source/Dsp.h"
+#include <iostream>
+#include <cstdlib>
+void check(bool b,const char* s){if(!b){std::cerr<<s<<'\n';std::exit(1);}}
+int main(){using namespace voices;for(double sr:{44100.,48000.,96000.}){Detector d;d.prepare(sr);for(float f:{110.f,220.f,440.f,660.f}){for(int i=0;i<int(sr*.4);++i)d.push(.2f*std::sin(2*pi*f*i/sr));check(std::abs(d.hz-f)<f*.025f,"pitch detection");}for(int i=0;i<int(sr*.2);++i)d.push(0);check(d.hz==0,"silence");Engine e;e.prepare(sr);Params p;p.sat=p.eq=p.doubler=p.chorus=p.delay=p.reverb=true;for(int i=0;i<int(sr*.5);++i){float x=.2f*std::sin(2*pi*225*i/sr),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<10&&std::abs(y)<10,"finite chain");}check(e.detected>220&&e.detected<230,"engine detector");p.power=false;float x=.2f,y=-.3f;e.tick(&x,&y,2,p);check(x==.2f&&y==-.3f,"bypass");}check(nearest(61,0,1,4095)!=61,"C major");check(nearest(61,0,6,1)==60,"custom mask");std::cout<<"DSP tests passed: 3 sample rates, 12 tone detections, silence, finite chain, bypass, scales\n";}
