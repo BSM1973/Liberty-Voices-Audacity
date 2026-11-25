@@ -19,7 +19,7 @@ struct MasterEngine {
  std::array<std::array<BandDetector,6>,2> detector;
  std::array<std::array<StudioBell,6>,2> filters;
  std::array<float,6> bandEnv{},bandGain{};
- float dynAttack=0,dynRelease=0;std::array<std::array<SaturationOS,3>,2> os;std::array<std::array<float,16>,2> dry{};int dryWrite=0,osMode=0;float osFade=0,abGain=1,preEnergy=0,energyAlpha=0;PeakLookahead lookahead;int latency()const{return 16+lookahead.latency;}
+ float dynAttack=0,dynRelease=0;std::array<std::array<SaturationOS,3>,2> os;std::array<std::array<float,16>,2> dry{};int dryWrite=0,osMode=0;bool osRunning=false;float osFade=0,abGain=1,preEnergy=0,energyAlpha=0;PeakLookahead lookahead;int latency()const{return 16+lookahead.latency;}
  void prepare(float s){*this=MasterEngine{};sr=s;smooth=1-std::exp(-1/(sr*.008f));dynAttack=1-std::exp(-1/(sr*.008f));dynRelease=1-std::exp(-1/(sr*.09f));energyAlpha=1-std::exp(-1/(sr*.4f));lookahead.prepare(sr);for(auto& c:os)for(int i=0;i<3;++i)c[i].prepare(2<<i);}
  static float shape(float x,int c){switch(c){case 1:return x/(1+std::abs(x));case 2:return std::tanh(x+.18f*x*x);default:return std::tanh(x);}}
  void tick(float& left,float& right,int channels,float external,const MasterParams& p){
@@ -32,10 +32,10 @@ struct MasterEngine {
    for(int b=0;b<6;++b){bandEnv[b]+=(levels[b]>bandEnv[b]?dynAttack:dynRelease)*(levels[b]-bandEnv[b]);if(count==1){float db=20*std::log10(std::max(1e-6f,bandEnv[b]));float goal=p.dynRange[b]*clamp((db-p.dynThreshold[b])/12,0,1);bandGain[b]+=.25f*(goal-bandGain[b]);}}
    for(int k=0;k<channels;++k){float y=x[k];for(int b=0;b<6;++b)y=filters[k][b].tick(y);x[k]+=eqMix*(y-x[k]);}}
   if(compMix>.0001f){float v=p.external?std::abs(external):std::max(std::abs(x[0]),std::abs(x[channels-1]));env+=(v>env?atk:rel)*(v-env);float db=20*std::log10(std::max(1e-6f,env)),over=std::max(0.f,db-threshold);float slope=1-1/ratio;if(model==0||model==3)slope*=clamp(over/8,0,1);float goal=gain(-over*slope);compGain+=(goal<compGain?atk:rel)*(goal-compGain);for(int k=0;k<channels;++k)x[k]*=1+compMix*(compGain*makeup-1);}
-  int mode=std::clamp(p.oversampling,0,3);if(mode!=osMode){osMode=mode;osFade=0;if(mode)for(auto& c:os)c[mode-1].reset();}
+  int mode=std::clamp(p.oversampling,0,3);bool runOS=mode>0&&p.power&&(p.saturation||satMix>.0001f);if(mode!=osMode||runOS!=osRunning){osMode=mode;osRunning=runOS;osFade=0;if(runOS)for(auto& c:os)c[mode-1].reset();}
   const float norm=std::max(1.f,std::sqrt(drive));auto shaping=[&](float v){return shape(v*drive,color)/norm;};
-  for(int k=0;k<channels;++k){float v=dry[k][dryWrite];dry[k][dryWrite]=x[k];if(mode==0)x[k]=v+satMix*(shaping(v)-v);else{float wet=os[k][mode-1].tick(x[k],shaping);x[k]=v+satMix*osFade*(wet-v);}}
-  dryWrite=(dryWrite+1)%16;if(mode)osFade=std::min(1.f,osFade+1/(sr*.025f));
+  for(int k=0;k<channels;++k){float v=dry[k][dryWrite];dry[k][dryWrite]=x[k];if(runOS){float wet=os[k][mode-1].tick(x[k],shaping);x[k]=v+satMix*osFade*(wet-v);}else if(mode==0&&satMix>.0001f)x[k]=v+satMix*(shaping(v)-v);else x[k]=v;}
+  dryWrite=(dryWrite+1)%16;if(runOS)osFade=std::min(1.f,osFade+1/(sr*.025f));
   float e=0;for(int k=0;k<channels;++k)e+=x[k]*x[k]/channels;preEnergy+=energyAlpha*(e-preEnergy);
   abGain+=smooth*((p.power?p.comparisonGain:1.f)-abGain);for(int k=0;k<channels;++k)x[k]*=abGain;
   lookahead.tick(x[0],x[1],channels,p.power&&p.limiter,ceilGain,p.release);
