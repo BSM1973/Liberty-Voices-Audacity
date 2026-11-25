@@ -10,7 +10,7 @@ public:
  AP state{*this,nullptr,"VOICES_STATE",layout()};
  voices::Engine engine;
  std::array<std::atomic<int>,std::size(voices::specs)> cc;std::atomic<int> learn{-1};
- std::atomic<float> detected{0},target{0},cents{0};std::array<std::atomic<float>,2> inPeak{},outPeak{};std::atomic<bool> inClip{false},outClip{false};
+ std::atomic<float> detected{0},target{0},cents{0},vocalConfidence{0},vocalProtection{0},rangeLow{0},rangeHigh{0};std::atomic<int> vocalKind{0};std::array<std::atomic<float>,2> inPeak{},outPeak{};std::atomic<bool> inClip{false},outClip{false};
  std::array<bool,100> favorites{};int preset=0;bool french=true;
  void prepareToPlay(double,int)override;void releaseResources()override{};void processBlock(juce::AudioBuffer<float>&,juce::MidiBuffer&)override;
  bool isBusesLayoutSupported(const BusesLayout&)const override;

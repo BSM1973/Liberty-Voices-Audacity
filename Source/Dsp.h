@@ -118,15 +118,51 @@ struct VocalRoom {
   return wet;
  }
 };
+// Lightweight causal vocal features; no model, allocations or lookahead.
+// Classes: 0 quiet, 1 breath/noise, 2 sibilant, 3 transient, 4 voiced,
+// 5 stable/singing-like, 6 variable/speech-like. Last two are heuristics.
+struct VocalIntelligence {
+ float sr=48000,low=0,fast=0,slow=0,high=0,energy=0,protection=0,centre=0,variation=0,stable=0,rangeLow=0,rangeHigh=0,last=0;
+ float aFast=0,aSlow=0,aLow=0,aTrack=0,aProtect=0,aRelease=0;
+ int kind=0,hold=0,clock=0;bool wasVoiced=false;
+ void prepare(float rate){*this=VocalIntelligence{};sr=rate;aFast=1-std::exp(-1.f/(sr*.003f));aSlow=1-std::exp(-1.f/(sr*.04f));aLow=1-std::exp(-2*pi*2200.f/sr);aTrack=1-std::exp(-16.f/(sr*.22f));aProtect=1-std::exp(-1.f/(sr*.0015f));aRelease=1-std::exp(-1.f/(sr*.025f));}
+ void tick(float x,float hz,float confidence){
+  low+=aLow*(x-low);float hf=x-low,xx=x*x;fast+=aFast*(xx-fast);slow+=aSlow*(xx-slow);high+=aFast*(hf*hf-high);energy=fast;
+  float brightness=high/std::max(fast,1e-9f);
+  bool voiced=hz>50&&confidence>.72f&&fast>2e-6f;
+  if(fast>1e-4f&&fast>slow*4.5f&&(!voiced||brightness>.35f))hold=int(sr*.012f);
+  if(hold>0)--hold;
+  if(fast<2e-6f)kind=0;
+  else if(brightness>.48f)kind=2;
+  else if(hold>0)kind=3;
+  else if(!voiced)kind=1;
+  else kind=stable>.55f?5:variation>.32f?6:4;
+  const bool protect=kind<4;
+  protection+=(protect?aProtect:aRelease)*((protect?1.f:0.f)-protection);
+  clock=(clock+1)&15;
+  if(clock==1){
+   if(voiced&&brightness<.48f&&hold==0){
+    float note=midi(hz);
+    if(!wasVoiced){centre=note;last=note;variation=0;}
+    float delta=std::abs(note-centre);centre+=aTrack*(note-centre);
+    variation+=aTrack*(delta-variation);stable+=aTrack*((delta<.45f?1.f:0.f)-stable);
+    if(rangeLow==0){rangeLow=rangeHigh=hz;}
+    else{rangeLow=std::min(rangeLow,hz);rangeHigh=std::max(rangeHigh,hz);}
+    last=note;
+   }else stable+=aTrack*(0-stable);
+   wasVoiced=voiced;
+  }
+ }
+};
 struct Engine {
  struct Channel {Shifter pitch,dub,dubOther;FormantEngine formants;Delay dry,alignedDry,chor,echo;VocalRoom room;Pole hp,body,pres,air;float pitchBlend=0;};
- std::array<Channel,2> ch; Detector det; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
+ std::array<Channel,2> ch; Detector det; VocalIntelligence intelligence;float smoothAlpha=0; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
  int latency(bool isLive)const{return int(std::round(sr*(isLive?.004f:.01f)))+1+(isLive?0:ch[0].formants.n);}
  int latency()const{return latency(live);}
  void setMode(bool mode){if(live==mode)return;live=mode;fade=0;for(auto& c:ch){c.pitch.window=float(2*(latency(mode)-1-(mode?0:c.formants.n)));c.pitch.phase=0;c.pitchBlend=0;c.formants.prepare(sr);std::fill(c.alignedDry.buf.begin(),c.alignedDry.buf.end(),0.f);c.alignedDry.w=0;}}
- void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);det.prepare(s);ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);}}
+ void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);det.prepare(s);intelligence.prepare(sr);smoothAlpha=1-std::exp(-1.f/(sr*.008f));ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);}}
  void tick(float* l,float* r,int channels,const Params& p){
-  float in[2]={*l,channels>1?*r:*l}; const std::array<bool,8> switches={p.power,p.tune,p.sat,p.eq,p.doubler,p.chorus,p.delay,p.reverb};if(first){smooth=p;for(int i=0;i<8;++i)enabled[i]=switches[i]?1.f:0.f;first=false;} float a=1-std::exp(-1.f/(sr*.008f));for(int i=0;i<8;++i)enabled[i]+=a*((switches[i]?1.f:0.f)-enabled[i]);fade=std::min(1.f,fade+1.f/(sr*.012f));
+  float in[2]={*l,channels>1?*r:*l}; const std::array<bool,8> switches={p.power,p.tune,p.sat,p.eq,p.doubler,p.chorus,p.delay,p.reverb};if(first){smooth=p;for(int i=0;i<8;++i)enabled[i]=switches[i]?1.f:0.f;first=false;} const float a=smoothAlpha;for(int i=0;i<8;++i)enabled[i]+=a*((switches[i]?1.f:0.f)-enabled[i]);fade=std::min(1.f,fade+1.f/(sr*.012f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)
   S(input);S(output);S(mix);S(speed);S(human);S(flex);S(transition);S(amount);S(formant);S(drive);S(satMix);S(hp);S(body);S(presence);S(air);S(doubleAmount);S(spread);S(detune);S(chorusRate);S(chorusDepth);S(chorusMix);S(delayMs);S(feedback);S(delayMix);S(size);S(decay);S(tone);S(reverbMix);
   #undef S
@@ -137,12 +173,12 @@ struct Engine {
   const float fallback=channels>1&&strongest>1e-8f?clamp(1-midPower/(.15f*strongest),0,1):0;
   detectorBlend+=a*(fallback-detectorBlend);
   const float side=leftPower>=rightPower*.9f?in[0]:in[1];
-  det.push((mid+(side-mid)*detectorBlend)*gain(q.input));float goal=0;detected=det.hz;
+  const float analysisInput=(mid+(side-mid)*detectorBlend)*gain(q.input);det.push(analysisInput);float goal=0;detected=det.hz;intelligence.tick(analysisInput,detected,det.confidence);
   const int previous=targetNote;
   control=(control+1)&15;if(control==1){
   if(detected>0&&scaleMask(p.scale,p.mask)!=0){
    const float note=midi(detected);int n=nearest(note,p.key,p.scale,p.mask);
-   if(p.character==0&&previous>=0&&noteAllowed(previous,p.key,p.scale,p.mask)&&std::abs(note-previous)<=std::abs(note-n)+.12f)n=previous;
+   if(p.character==0&&previous>=0&&noteAllowed(previous,p.key,p.scale,p.mask)&&std::abs(note-previous)<=std::abs(note-n)+(.08f+.12f*q.human))n=previous;
    targetNote=n;target=440*std::pow(2.f,(n-69)/12.f);
    if(previous!=n||noteCentre==0)noteCentre=note;
    else noteCentre+=(1-std::exp(-16.f/(sr*.045f)))*(note-noteCentre);
@@ -157,7 +193,7 @@ struct Engine {
   time=std::max(1.f,time);
   desiredRatio=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);ratioAlpha=1-std::exp(-1000.f/(sr*time));}
   ratio+=ratioAlpha*(desiredRatio-ratio);
-  correction=p.tune&&p.power?12*std::log2(ratio)*100:0;
+  correction=p.tune&&p.power?12*std::log2(ratio)*100*(1-intelligence.protection):0;
   phase+=q.chorusRate/sr;phase-=std::floor(phase);
   const float inputGain=gain(q.input),outputGain=gain(q.output),driveGain=gain(q.drive),bodyGain=gain(q.body)-1,presGain=gain(q.presence)-1,airGain=gain(q.air)-1;
   const float dubUp=std::pow(2.f,q.detune/1200.f),dubDown=1.f/dubUp;
@@ -166,8 +202,8 @@ struct Engine {
    // Gain applied after the pitch delay to keep the neutral and shifted paths aligned.
    float pitched=c.pitch.tick(in[k],ratio)*inputGain;
    float blend=enabled[1]*clamp(std::abs(ratio-1)/.002f,0,1);
-   c.pitchBlend+=a*(blend-c.pitchBlend);float y=dry+(pitched-dry)*c.pitchBlend;
-   if(!live){y=c.formants.tick(dry,y,q.formant*enabled[1],ratio,detected,enabled[1]>.001f&&enabled[0]>.001f);c.alignedDry.write(raw);raw=c.alignedDry.read(float(c.formants.n+1));dry=raw*inputGain;}
+   c.pitchBlend+=a*(blend-c.pitchBlend);float y=dry+(pitched-dry)*c.pitchBlend*(1-intelligence.protection);
+   if(!live){y=c.formants.tick(dry,y,q.formant*enabled[1],ratio,detected,enabled[1]>.001f&&enabled[0]>.001f&&intelligence.protection<.5f);c.alignedDry.write(raw);raw=c.alignedDry.read(float(c.formants.n+1));dry=raw*inputGain;}
    y+=(std::tanh(y*driveGain)/std::max(1.f,std::sqrt(driveGain))-y)*q.satMix*enabled[2];
    float eqY=y-c.hp.low(y,q.hp,sr);float b=c.body.low(eqY,400,sr),m=c.pres.low(eqY,3500,sr),hi=eqY-c.air.low(eqY,9000,sr);
    eqY+=b*bodyGain+(m-b)*presGain+hi*airGain;y+=(eqY-y)*enabled[3];

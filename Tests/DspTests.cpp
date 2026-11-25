@@ -1,4 +1,7 @@
 #include "../Source/Dsp.h"
+#include "../Source/Parameters.h"
+#include <set>
+#include <string>
 #include <iostream>
 #include <cstdlib>
 #include <chrono>
@@ -36,4 +39,68 @@ int main(){using namespace voices;for(double sr:{44100.,48000.,96000.}){Detector
 }
 for(bool live:{false,true}){Engine e;e.prepare(48000);e.setMode(live);Params p;p.tune=false;p.eq=false;p.sat=p.chorus=p.doubler=p.delay=p.reverb=false;float last=0,maxStep=0;
  for(int i=0;i<48000;++i){if(i==12000||i==24000){p.sat=!p.sat;p.eq=!p.eq;p.doubler=!p.doubler;p.chorus=!p.chorus;p.delay=!p.delay;p.reverb=!p.reverb;p.power=!p.power;}float x=.15f*std::sin(2*pi*220*i/48000),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<3,"effect toggle finite");if(i>5000)maxStep=std::max(maxStep,std::abs(x-last));last=x;}check(maxStep<.3f,"effect transition bounded");
+}// Voice feature tests using reproducible synthetic signals.
+for(double rate:{44100.,48000.,96000.}){
+ VocalIntelligence vi;vi.prepare(float(rate));
+ for(int i=0;i<int(rate*.3);++i)vi.tick(.2f*std::sin(2*pi*220*i/rate),220,.95f);
+ check(vi.kind>=4&&vi.protection<.05f&&vi.rangeLow>210,"voiced classification");
+ for(int i=0;i<int(rate*.12);++i)vi.tick(.15f*std::sin(2*pi*6500*i/rate),220,.95f);
+ check(vi.kind==2&&vi.protection>.9f,"sibilance protection with stale pitch estimate");
+ for(int i=0;i<int(rate*.2);++i)vi.tick(0,0,0);
+ check(vi.kind==0&&vi.protection>.9f,"silence protection");
+}
+std::set<std::string> uniqueNames;
+for(int index=0;index<100;++index){
+ check(uniqueNames.insert(names[index/10][index%10]).second,"unique preset name");
+ Params p;factoryPreset(index,[&](const char* id,float v){std::string key=id;check(std::isfinite(v),"finite preset value");
+ for(auto& spec:specs)if(key==spec.id)check(v>=spec.min-.0001f&&v<=spec.max+.0001f,"preset range");
+ if(key=="input")p.input=v;
+if(key=="output")p.output=v;
+if(key=="mix")p.mix=v*.01f;
+if(key=="speed")p.speed=v;
+if(key=="human")p.human=v*.01f;
+if(key=="flex")p.flex=v;
+if(key=="transition")p.transition=v;
+if(key=="amount")p.amount=v*.01f;
+if(key=="formant")p.formant=v;
+if(key=="drive")p.drive=v;
+if(key=="satMix")p.satMix=v*.01f;
+if(key=="hp")p.hp=v;
+if(key=="body")p.body=v;
+if(key=="presence")p.presence=v;
+if(key=="air")p.air=v;
+if(key=="doubleAmount")p.doubleAmount=v*.01f;
+if(key=="spread")p.spread=v*.01f;
+if(key=="detune")p.detune=v;
+if(key=="chorusRate")p.chorusRate=v;
+if(key=="chorusDepth")p.chorusDepth=v;
+if(key=="chorusMix")p.chorusMix=v*.01f;
+if(key=="delayMs")p.delayMs=v;
+if(key=="feedback")p.feedback=v*.01f;
+if(key=="delayMix")p.delayMix=v*.01f;
+if(key=="size")p.size=v;
+if(key=="decay")p.decay=v;
+if(key=="tone")p.tone=v;
+if(key=="reverbMix")p.reverbMix=v*.01f;
+ if(key=="power")p.power=v>.5f;
+if(key=="tune")p.tune=v>.5f;
+if(key=="sat")p.sat=v>.5f;
+if(key=="eq")p.eq=v>.5f;
+if(key=="doubler")p.doubler=v>.5f;
+if(key=="chorus")p.chorus=v>.5f;
+if(key=="delay")p.delay=v>.5f;
+if(key=="reverb")p.reverb=v>.5f;
+ if(key=="character")p.character=int(v);
+ if(key=="key")p.key=int(v);
+ if(key=="scale")p.scale=int(v);
+ });
+ Engine e;e.prepare(48000);double energy=0;float peak=0;
+ for(int i=0;i<14400;++i){float x=.13f*std::sin(2*pi*225*i/48000)+.045f*std::sin(2*pi*450*i/48000),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<4&&std::abs(y)<4,"preset render finite");energy+=x*x;peak=std::max(peak,std::abs(x));}
+ check(energy>1e-5,"preset produces output");std::cout<<"Preset "<<index+1<<" "<<names[index/10][index%10]<<" peak="<<peak<<" RMS="<<std::sqrt(energy/14400)<<'\n';
+}
+for(bool live:{false,true})for(int block:{32,64,128,256}){
+ Engine e;e.prepare(48000);e.setMode(live);Params p;p.eq=p.sat=p.doubler=p.chorus=p.delay=p.reverb=true;p.formant=5;
+ std::vector<double> timings;timings.reserve(48000/block);double total=0,peak=0;int frames=0;
+ for(int start=0;start+block<=48000;start+=block){auto t0=std::chrono::steady_clock::now();for(int j=0;j<block;++j){int i=start+j;float x=.12f*std::sin(2*pi*225*i/48000)+.06f*std::sin(2*pi*450*i/48000),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y),"full chain benchmark finite");}double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();timings.push_back(elapsed);total+=elapsed;peak=std::max(peak,elapsed);frames+=block;}
+ std::sort(timings.begin(),timings.end());std::cout<<"FULL_LOAD "<<(live?"Live":"Studio")<<" block="<<block<<" mean="<<100*total/(frames/48000.)<<"% p99="<<100*timings[size_t(.99*(timings.size()-1))]/(block/48000.)<<"% max="<<100*peak/(block/48000.)<<"%\n";
 }check(noteAllowed(60,0,1,4095)&&!noteAllowed(61,0,1,4095),"scale membership");check(nearest(61,0,1,4095)!=61,"C major");check(nearest(61,0,6,1)==60,"custom mask");std::cout<<"DSP tests passed: 3 sample rates, 12 tone detections, silence, finite chain, bypass, scales, harmonic onset, DC, stereo phase, correction and empty mask\n";}
