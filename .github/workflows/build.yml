@@ -1,5 +1,5 @@
 name: Voices Audacity - development
-on: [push, workflow_dispatch]
+on: [push, pull_request, workflow_dispatch]
 jobs:
   build:
     strategy:
@@ -22,11 +22,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: Voices-Audacity-QC-${{ matrix.os }}-v0.5.0
+          name: Voices-Audacity-QC-${{ matrix.os }}-v0.8.2
           path: build/Testing/Temporary/LastTest.log
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: Voices-Audacity-${{ matrix.os }}-v0.5.0
+          name: Voices-Audacity-${{ matrix.os }}-v0.8.2
           path: build/VoicesAudacity_artefacts/Release/**
           if-no-files-found: error

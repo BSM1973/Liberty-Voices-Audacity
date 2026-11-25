@@ -2,15 +2,17 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 #include "Dsp.h"
+#include "Mastering.h"
 #include "Parameters.h"
 class VoicesProcessor final:public juce::AudioProcessor,private juce::Timer {
 public:
  using AP=juce::AudioProcessorValueTreeState;
  VoicesProcessor(); ~VoicesProcessor() override{stopTimer();} static AP::ParameterLayout layout();
  AP state{*this,nullptr,"VOICES_STATE",layout()};
- voices::Engine engine;
+ voices::Engine engine;voices::MasterEngine mastering;voices::LoudnessMeter loudness;std::atomic<float> lufsM{-100},lufsI{-100};std::atomic<bool> resetLoudness{false};std::atomic<float> compareGain{1},comparisonDb{-100},cpuMean{0},cpuPeak{0};std::atomic<int> comparisonSamples{0};std::atomic<bool> resetComparison{false};
  std::array<std::atomic<int>,std::size(voices::specs)> cc;std::atomic<int> learn{-1};
  std::atomic<float> detected{0},target{0},cents{0},vocalConfidence{0},vocalProtection{0},rangeLow{0},rangeHigh{0};std::atomic<int> vocalKind{0};std::array<std::atomic<float>,2> inPeak{},outPeak{};std::atomic<bool> inClip{false},outClip{false};
+ std::atomic<bool> spectrumVisible{false};std::array<std::atomic<float>,96> spectrum{};
  std::array<bool,100> favorites{};int preset=0;bool french=true;
  void prepareToPlay(double,int)override;void releaseResources()override{};void processBlock(juce::AudioBuffer<float>&,juce::MidiBuffer&)override;
  bool isBusesLayoutSupported(const BusesLayout&)const override;
@@ -20,5 +22,5 @@ public:
  void getStateInformation(juce::MemoryBlock&)override;void setStateInformation(const void*,int)override;
  float value(const char* id)const{return state.getRawParameterValue(id)->load();}void set(const char* id,float v);void load(int);juce::File presetDir()const;
 public:std::atomic<bool> activeLive{false},transportPlaying{false};std::atomic<int> latencyStudio{0},latencyLive{0};
-private:double sampleRate=48000;void timerCallback()override;
+private:static constexpr int fftSize=4096;juce::dsp::FFT spectrumFFT{12};std::array<float,fftSize*2> spectrumData{};std::array<float,fftSize> spectrumWindow{};std::array<int,97> spectrumEdges{};int spectrumPos=0;void pushSpectrum(float);std::array<std::array<bool,128>,16> heldNotes{};double sampleRate=48000;void timerCallback()override;
 };
