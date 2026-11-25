@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <complex>
 namespace voices {
 constexpr float pi=3.14159265358979323846f;
 inline float clamp(float x,float a,float b){return std::max(a,std::min(b,x));}
@@ -46,15 +47,71 @@ struct Shifter {
  void prepare(float sr){window=std::max(64.f,sr*.02f);phase=0;d.prepare(int(window*2)+16);}
  float tick(float x,float ratio){d.write(x);phase+=(1-ratio)/window;phase-=std::floor(phase);float p2=phase+.5f;p2-=std::floor(p2);float a=.5f-.5f*std::cos(2*pi*phase);return a*d.read(2+phase*window)+(1-a)*d.read(2+p2*window);}
 };
+// Fixed-size, allocation-free weighted overlap-add spectral envelope processor.
+// This changes the harmonic amplitude envelope, not the harmonic frequencies.
+struct FormantEngine {
+ static constexpr int maxN=2048,maxBins=maxN/2+1;
+ using Complex=std::complex<float>;
+ std::array<float,maxN> reference{},wet{},ola{},window{};
+ std::array<Complex,maxN> r{},w{};
+ std::array<Complex,maxN/2> roots{};
+ std::array<float,maxBins> logRef{},logWet{},envRef{},envWet{},tmp{},gains{};
+ std::array<float,maxBins+1> prefix{};
+ int n=1024,hop=256,pos=0,count=0;float sr=48000;
+ void prepare(float sampleRate){
+  sr=sampleRate;n=sr>64000?2048:1024;hop=n/4;pos=count=0;
+  reference.fill(0);wet.fill(0);ola.fill(0);gains.fill(0);
+  for(int i=0;i<n;++i)window[i]=std::sqrt(std::max(0.f,.5f-.5f*std::cos(2*pi*i/n)));
+  for(int i=0;i<n/2;++i)roots[i]=Complex(std::cos(-2*pi*i/n),std::sin(-2*pi*i/n));
+ }
+ void fft(std::array<Complex,maxN>& a,bool inverse)const{
+  for(int i=1,j=0;i<n;++i){int bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j)std::swap(a[i],a[j]);}
+  for(int len=2;len<=n;len*=2){int half=len/2,step=n/len;for(int i=0;i<n;i+=len)for(int j=0;j<half;++j){auto root=roots[j*step];if(inverse)root=std::conj(root);auto u=a[i+j],v=a[i+j+half]*root;a[i+j]=u+v;a[i+j+half]=u-v;}}
+  if(inverse)for(int i=0;i<n;++i)a[i]/=float(n);
+ }
+ void average(const std::array<float,maxBins>& input,std::array<float,maxBins>& output,int radius){
+  const int bins=n/2+1;prefix[0]=0;for(int i=0;i<bins;++i)prefix[i+1]=prefix[i]+input[i];
+  for(int i=0;i<bins;++i){int lo=std::max(0,i-radius),hi=std::min(bins-1,i+radius);output[i]=(prefix[hi+1]-prefix[lo])/float(hi-lo+1);}
+ }
+ void envelope(const std::array<Complex,maxN>& spectrum,std::array<float,maxBins>& logMag,std::array<float,maxBins>& env,int radius){
+  float peak=0;for(int i=0;i<=n/2;++i)peak=std::max(peak,std::abs(spectrum[i]));
+  float floor=std::max(1e-7f,peak*.001f);
+  for(int i=0;i<=n/2;++i)logMag[i]=std::log(std::max(floor,std::abs(spectrum[i])));
+  average(logMag,tmp,radius);average(tmp,env,radius);
+ }
+ float tick(float ref,float signal,float semitones,float pitchRatio,float fundamental,bool enabled){
+  float out=ola[pos];ola[pos]=0;reference[pos]=ref;wet[pos]=signal;pos=(pos+1)%n;
+  if(++count<hop)return out;count=0;
+  const bool active=enabled&&(std::abs(semitones)>.01f||std::abs(pitchRatio-1)>.002f)&&fundamental>50;
+  for(int i=0;i<n;++i){int ix=(pos+i)%n;w[i]=Complex(wet[ix]*window[i],0);if(active)r[i]=Complex(reference[ix]*window[i],0);}
+  fft(w,false);
+  if(active){
+   fft(r,false);const int radius=std::clamp(int(std::ceil(std::max(160.f,fundamental*1.1f)*n/sr)),2,n/12);
+   envelope(r,logRef,envRef,radius);envelope(w,logWet,envWet,radius);
+   const float scale=std::pow(2.f,semitones/12.f);
+   for(int i=0;i<=n/2;++i){
+    float source=clamp(i/scale,0,float(n/2));int lo=int(source),hi=std::min(n/2,lo+1);
+    float desired=envRef[lo]+(source-lo)*(envRef[hi]-envRef[lo]);
+    float freq=float(i)*sr/n;
+    float taper=clamp(freq/180.f,0,1)*clamp((std::min(10000.f,sr*.47f)-freq)/1800.f,0,1);
+    float goal=clamp(desired-envWet[i],-1.38f,1.38f)*taper;
+    gains[i]+=.35f*(goal-gains[i]);
+   }
+  }else for(int i=0;i<=n/2;++i)gains[i]*=.65f;
+  for(int i=0;i<=n/2;++i){float g=std::exp(gains[i]);w[i]*=g;if(i>0&&i<n/2)w[n-i]*=g;}
+  fft(w,true);for(int i=0;i<n;++i)ola[(pos+i)%n]+=.5f*window[i]*w[i].real();
+  return out;
+ }
+};
 struct Pole {float z=0;float low(float x,float hz,float sr){float a=1-std::exp(-2*pi*clamp(hz,10,sr*.45f)/sr);z+=a*(x-z);return z;}};
 struct Params {
  float input=0,output=0,mix=1,speed=35,human=.45f,flex=8,transition=35,amount=1,formant=0,drive=4,satMix=.25f,hp=70,body=0,presence=0,air=0,doubleAmount=.2f,spread=.7f,detune=7,chorusRate=.35f,chorusDepth=3,chorusMix=.15f,delayMs=280,feedback=.22f,delayMix=.12f,size=.35f,decay=.42f,tone=6500,reverbMix=.12f;
  int key=0,scale=0,character=0;unsigned mask=4095; bool power=true,tune=true,sat=false,eq=true,doubler=false,chorus=false,delay=false,reverb=false;
 };
 struct Engine {
- struct Channel {Shifter pitch,dub;Delay dry,chor,echo,rev;Pole hp,body,pres,air,form,tone;float revFeedback=0;};
+ struct Channel {Shifter pitch,dub;FormantEngine formants;Delay dry,alignedDry,chor,echo,rev;Pole hp,body,pres,air,tone;float revFeedback=0;};
  std::array<Channel,2> ch; Detector det; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true;
- void prepare(double s){sr=float(s);det.prepare(s);ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.rev.prepare(int(sr*.2f)+8);}}
+ void prepare(double s){sr=float(s);det.prepare(s);ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.rev.prepare(int(sr*.2f)+8);}}
  void tick(float* l,float* r,int channels,const Params& p){
   float in[2]={*l,channels>1?*r:*l}; if(first){smooth=p;first=false;} float a=1-std::exp(-1.f/(sr*.008f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)
@@ -86,8 +143,8 @@ struct Engine {
   correction=p.tune&&p.power?12*std::log2(ratio)*100:0;
   phase+=q.chorusRate/sr;phase-=std::floor(phase);
   for(int k=0;k<channels;++k){auto& c=ch[k];float x=in[k]*gain(q.input);c.dry.write(x);float dry=c.dry.read(c.pitch.window*.5f+2);float pitched=c.pitch.tick(x,p.tune?ratio:1);float y=p.tune&&std::abs(ratio-1)>.0005f?pitched:dry;
-   // Prototype spectral colour proxy: not true independent formant shifting.
-   float low=c.form.low(y,1100,sr);y+=q.formant/12.f*(y-2*low)*.35f;
+   y=c.formants.tick(dry,y,p.tune?q.formant:0.f,p.tune?ratio:1.f,detected,p.tune&&p.power);
+   c.alignedDry.write(dry);dry=c.alignedDry.read(float(c.formants.n+1));
    if(p.sat){float g=gain(q.drive);y+=(std::tanh(y*g)/std::max(1.f,std::sqrt(g))-y)*q.satMix;}
    if(p.eq){y-=c.hp.low(y,q.hp,sr);float b=c.body.low(y,400,sr);float m=c.pres.low(y,3500,sr);float h=y-c.air.low(y,9000,sr);y+=b*(gain(q.body)-1)+(m-b)*(gain(q.presence)-1)+h*(gain(q.air)-1);}
    float dub=c.dub.tick(y,std::pow(2.f,((k==0?-1:1)*q.detune)/1200.f));if(p.doubler)y+=(dub-y)*q.doubleAmount*(.5f+.5f*q.spread);

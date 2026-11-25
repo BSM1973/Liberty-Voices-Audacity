@@ -15,4 +15,14 @@ int main(){using namespace voices;for(double sr:{44100.,48000.,96000.}){Detector
  for(int i=0;i<int(sr*.1);++i){float x=.2f*std::sin(2*pi*225*i/sr),y=x;e.tick(&x,&y,2,p);}
  check(e.targetNote==-1&&std::abs(e.correction)<1,"empty custom mask disables correction");
  p.tune=false;float x=.1f,y=x;e.tick(&x,&y,2,p);check(e.correction==0,"bypassed tune meter");
+}for(double sr:{44100.,48000.,96000.}){
+ FormantEngine neutral;neutral.prepare(float(sr));float peak=0,error=0;int peakAt=-1;
+ for(int i=0;i<neutral.n*4;++i){float x=i==neutral.n?1.f:0.f;float y=neutral.tick(x,x,0,1,0,false);if(std::abs(y)>peak){peak=std::abs(y);peakAt=i;}float expected=i==neutral.n*2?1.f:0.f;error=std::max(error,std::abs(y-expected));}
+ check(peakAt==neutral.n*2&&error<.0001f,"formant unity reconstruction and latency");
+ FormantEngine shift;shift.prepare(float(sr));double lo0=0,hi0=0,lo1=0,hi1=0,loq0=0,hiq0=0,loq1=0,hiq1=0;
+ for(int i=0;i<int(sr);++i){float x=0;for(int h=1;h<=32;++h){float freq=h*100.f;float z=(freq-800.f)/180.f;x+=(.012f+.11f*std::exp(-.5f*z*z))*std::sin(2*pi*freq*i/sr);}float y=shift.tick(x,x,7,1,100,true);check(std::isfinite(y)&&std::abs(y)<5,"formant finite");
+ if(i>=int(sr*.5)){float a=2*pi*800*i/sr,b=2*pi*1200*i/sr;lo0+=x*std::cos(a);loq0+=x*std::sin(a);hi0+=x*std::cos(b);hiq0+=x*std::sin(b);lo1+=y*std::cos(a);loq1+=y*std::sin(a);hi1+=y*std::cos(b);hiq1+=y*std::sin(b);}}
+ double before=std::hypot(hi0,hiq0)/std::max(1e-8,std::hypot(lo0,loq0));double after=std::hypot(hi1,hiq1)/std::max(1e-8,std::hypot(lo1,loq1));
+ check(after>before*1.15,"formant shift changes harmonic envelope");
+ std::cout<<"Formant: "<<sr<<" Hz, added latency "<<shift.n<<" samples, envelope ratio "<<before<<" -> "<<after<<'\n';
 }check(noteAllowed(60,0,1,4095)&&!noteAllowed(61,0,1,4095),"scale membership");check(nearest(61,0,1,4095)!=61,"C major");check(nearest(61,0,6,1)==60,"custom mask");std::cout<<"DSP tests passed: 3 sample rates, 12 tone detections, silence, finite chain, bypass, scales, harmonic onset, DC, stereo phase, correction and empty mask\n";}
