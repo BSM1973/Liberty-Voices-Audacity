@@ -1,0 +1,5 @@
+/build/
+/dsp/
+/cmake-build-*/
+.DS_Store
+.vs/
