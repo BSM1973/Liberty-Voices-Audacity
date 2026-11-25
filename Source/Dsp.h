@@ -40,12 +40,13 @@ struct Delay {
  std::vector<float> buf; int w=0;
  void prepare(int n){buf.assign(n,0);w=0;}
  void write(float x){buf[w]=x;w=(w+1)%int(buf.size());}
+ float cubic(float d)const{d=clamp(d,2,float(buf.size()-3));float x=float(w)-d;while(x<0)x+=float(buf.size());int i=int(x),n=int(buf.size());float t=x-i,a=buf[(i+n-1)%n],b=buf[i],c=buf[(i+1)%n],e=buf[(i+2)%n];return b+.5f*t*(c-a+t*(2*a-5*b+4*c-e+t*(3*(b-c)+e-a)));}
  float read(float d)const{d=clamp(d,1,float(buf.size()-2));float p=float(w)-d;while(p<0)p+=float(buf.size());int i=int(p);float f=p-i;return buf[i]+f*(buf[(i+1)%buf.size()]-buf[i]);}
 };
 struct Shifter {
  Delay d;float phase=0,window=480;
- void prepare(float sr){window=std::max(64.f,sr*.02f);phase=0;d.prepare(int(window*2)+16);}
- float tick(float x,float ratio){d.write(x);phase+=(1-ratio)/window;phase-=std::floor(phase);float p2=phase+.5f;p2-=std::floor(p2);float a=.5f-.5f*std::cos(2*pi*phase);return a*d.read(2+phase*window)+(1-a)*d.read(2+p2*window);}
+ void prepare(float sr){window=std::max(64.f,float(std::round(sr*.02f/2)*2));phase=0;d.prepare(int(window*2)+16);}
+ float tick(float x,float ratio){d.write(x);phase+=(1-ratio)/window;phase-=std::floor(phase);float p2=phase+.5f;p2-=std::floor(p2);float a=.5f-.5f*std::cos(2*pi*phase);return a*d.cubic(2+phase*window)+(1-a)*d.cubic(2+p2*window);}
 };
 // Fixed-size, allocation-free weighted overlap-add spectral envelope processor.
 // This changes the harmonic amplitude envelope, not the harmonic frequencies.
@@ -108,14 +109,26 @@ struct Params {
  float input=0,output=0,mix=1,speed=35,human=.45f,flex=8,transition=35,amount=1,formant=0,drive=4,satMix=.25f,hp=70,body=0,presence=0,air=0,doubleAmount=.2f,spread=.7f,detune=7,chorusRate=.35f,chorusDepth=3,chorusMix=.15f,delayMs=280,feedback=.22f,delayMix=.12f,size=.35f,decay=.42f,tone=6500,reverbMix=.12f;
  int key=0,scale=0,character=0;unsigned mask=4095; bool power=true,tune=true,sat=false,eq=true,doubler=false,chorus=false,delay=false,reverb=false;
 };
+struct VocalRoom {
+ std::array<Delay,4> lines;std::array<Pole,4> damp;
+ void prepare(float sr){for(auto& line:lines)line.prepare(int(sr*.14f)+8);damp={};}
+ float tick(float x,float size,float decay,float tone,float sr,int channel){
+  constexpr float lengths[]={.0297f,.0371f,.0411f,.0437f};float wet=0;
+  for(int i=0;i<4;++i){float delay=sr*(lengths[i]*(.65f+size*1.35f)+channel*.0017f*(i+1));float tap=lines[i].read(delay);float filtered=damp[i].low(tap,tone,sr);lines[i].write(x*.5f+filtered*clamp(decay,0,.92f));wet+=tap*.5f;}
+  return wet;
+ }
+};
 struct Engine {
- struct Channel {Shifter pitch,dub;FormantEngine formants;Delay dry,alignedDry,chor,echo,rev;Pole hp,body,pres,air,tone;float revFeedback=0;};
- std::array<Channel,2> ch; Detector det; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true;
- void prepare(double s){sr=float(s);det.prepare(s);ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.rev.prepare(int(sr*.2f)+8);}}
+ struct Channel {Shifter pitch,dub,dubOther;FormantEngine formants;Delay dry,alignedDry,chor,echo;VocalRoom room;Pole hp,body,pres,air;float pitchBlend=0;};
+ std::array<Channel,2> ch; Detector det; float sr=48000,ratio=1,phase=0,target=0,detected=0,correction=0;int targetNote=-1,transitionRemaining=0;float leftPower=0,rightPower=0,midPower=0,detectorBlend=0;Params smooth{};bool first=true,live=false;float noteCentre=0,fade=1;std::array<float,8> enabled{};int control=0;float desiredRatio=1,ratioAlpha=.001f;
+ int latency(bool isLive)const{return int(std::round(sr*(isLive?.004f:.01f)))+1+(isLive?0:ch[0].formants.n);}
+ int latency()const{return latency(live);}
+ void setMode(bool mode){if(live==mode)return;live=mode;fade=0;for(auto& c:ch){c.pitch.window=float(2*(latency(mode)-1-(mode?0:c.formants.n)));c.pitch.phase=0;c.pitchBlend=0;c.formants.prepare(sr);std::fill(c.alignedDry.buf.begin(),c.alignedDry.buf.end(),0.f);c.alignedDry.w=0;}}
+ void prepare(double s){sr=float(s);live=false;noteCentre=0;fade=1;control=0;desiredRatio=1;ratioAlpha=.001f;enabled.fill(0);det.prepare(s);ratio=1;phase=0;target=detected=correction=0;targetNote=-1;transitionRemaining=0;leftPower=rightPower=midPower=detectorBlend=0;first=true;for(auto& c:ch){c=Channel{};c.pitch.prepare(sr);c.dub.prepare(sr);c.dubOther.prepare(sr);c.formants.prepare(sr);c.alignedDry.prepare(c.formants.n+8);c.dry.prepare(int(sr*.05f)+8);c.chor.prepare(int(sr*.06f)+8);c.echo.prepare(int(sr*2.1f)+8);c.room.prepare(sr);}}
  void tick(float* l,float* r,int channels,const Params& p){
-  float in[2]={*l,channels>1?*r:*l}; if(first){smooth=p;first=false;} float a=1-std::exp(-1.f/(sr*.008f));
+  float in[2]={*l,channels>1?*r:*l}; const std::array<bool,8> switches={p.power,p.tune,p.sat,p.eq,p.doubler,p.chorus,p.delay,p.reverb};if(first){smooth=p;for(int i=0;i<8;++i)enabled[i]=switches[i]?1.f:0.f;first=false;} float a=1-std::exp(-1.f/(sr*.008f));for(int i=0;i<8;++i)enabled[i]+=a*((switches[i]?1.f:0.f)-enabled[i]);fade=std::min(1.f,fade+1.f/(sr*.012f));
   #define S(k) smooth.k+=a*(p.k-smooth.k)
-  S(input);S(output);S(mix);S(amount);S(formant);S(drive);S(satMix);S(hp);S(body);S(presence);S(air);S(doubleAmount);S(spread);S(detune);S(chorusRate);S(chorusDepth);S(chorusMix);S(delayMs);S(feedback);S(delayMix);S(size);S(decay);S(tone);S(reverbMix);
+  S(input);S(output);S(mix);S(speed);S(human);S(flex);S(transition);S(amount);S(formant);S(drive);S(satMix);S(hp);S(body);S(presence);S(air);S(doubleAmount);S(spread);S(detune);S(chorusRate);S(chorusDepth);S(chorusMix);S(delayMs);S(feedback);S(delayMix);S(size);S(decay);S(tone);S(reverbMix);
   #undef S
   auto& q=smooth;
   const float mid=(in[0]+in[1])*.5f;
@@ -126,32 +139,46 @@ struct Engine {
   const float side=leftPower>=rightPower*.9f?in[0]:in[1];
   det.push((mid+(side-mid)*detectorBlend)*gain(q.input));float goal=0;detected=det.hz;
   const int previous=targetNote;
+  control=(control+1)&15;if(control==1){
   if(detected>0&&scaleMask(p.scale,p.mask)!=0){
    const float note=midi(detected);int n=nearest(note,p.key,p.scale,p.mask);
    if(p.character==0&&previous>=0&&noteAllowed(previous,p.key,p.scale,p.mask)&&std::abs(note-previous)<=std::abs(note-n)+.12f)n=previous;
    targetNote=n;target=440*std::pow(2.f,(n-69)/12.f);
-   const float diff=n-note,tolerance=p.flex*.01f;
-   goal=std::copysign(std::max(0.f,std::abs(diff)-tolerance),diff)*q.amount*(p.character==1?1.f:1.f-p.human*.45f);
-  }else{target=0;targetNote=-1;}
+   if(previous!=n||noteCentre==0)noteCentre=note;
+   else noteCentre+=(1-std::exp(-16.f/(sr*.045f)))*(note-noteCentre);
+   const float tracked=p.character==1?note:note+(noteCentre-note)*q.human;
+   const float diff=n-tracked,tolerance=q.flex*.01f;
+   goal=std::copysign(std::max(0.f,std::abs(diff)-tolerance),diff)*q.amount*(p.character==1?1.f:1.f-q.human*.45f);
+  }else{target=0;targetNote=-1;noteCentre=0;}
   if(previous>=0&&targetNote>=0&&previous!=targetNote)transitionRemaining=int(sr*.001f*p.transition);
   if(targetNote<0)transitionRemaining=0;
   float time=p.character==1?std::min(8.f,p.speed):p.speed;
-  if(transitionRemaining>0){time=std::max(time,p.transition);--transitionRemaining;}
+  if(transitionRemaining>0){time=std::max(time,p.transition);transitionRemaining=std::max(0,transitionRemaining-16);}
   time=std::max(1.f,time);
-  const float desired=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);
-  ratio+=(1-std::exp(-1000.f/(sr*time)))*(desired-ratio);
+  desiredRatio=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);ratioAlpha=1-std::exp(-1000.f/(sr*time));}
+  ratio+=ratioAlpha*(desiredRatio-ratio);
   correction=p.tune&&p.power?12*std::log2(ratio)*100:0;
   phase+=q.chorusRate/sr;phase-=std::floor(phase);
-  for(int k=0;k<channels;++k){auto& c=ch[k];float x=in[k]*gain(q.input);c.dry.write(x);float dry=c.dry.read(c.pitch.window*.5f+2);float pitched=c.pitch.tick(x,p.tune?ratio:1);float y=p.tune&&std::abs(ratio-1)>.0005f?pitched:dry;
-   y=c.formants.tick(dry,y,p.tune?q.formant:0.f,p.tune?ratio:1.f,detected,p.tune&&p.power);
-   c.alignedDry.write(dry);dry=c.alignedDry.read(float(c.formants.n+1));
-   if(p.sat){float g=gain(q.drive);y+=(std::tanh(y*g)/std::max(1.f,std::sqrt(g))-y)*q.satMix;}
-   if(p.eq){y-=c.hp.low(y,q.hp,sr);float b=c.body.low(y,400,sr);float m=c.pres.low(y,3500,sr);float h=y-c.air.low(y,9000,sr);y+=b*(gain(q.body)-1)+(m-b)*(gain(q.presence)-1)+h*(gain(q.air)-1);}
-   float dub=c.dub.tick(y,std::pow(2.f,((k==0?-1:1)*q.detune)/1200.f));if(p.doubler)y+=(dub-y)*q.doubleAmount*(.5f+.5f*q.spread);
-   c.chor.write(y);float cy=c.chor.read(sr*.001f*(12+q.chorusDepth*std::sin(2*pi*(phase+k*.25f))));if(p.chorus)y+=(cy-y)*q.chorusMix;
-   float echo=c.echo.read(sr*.001f*q.delayMs);c.echo.write(y+(p.delay?echo*q.feedback:0));if(p.delay)y+=echo*q.delayMix;
-   float rv=c.rev.read(sr*(.025f+q.size*.06f+k*.009f));float damp=c.tone.low(rv,q.tone,sr);c.rev.write(y+damp*clamp(q.decay,0,.92f));if(p.reverb)y+=rv*q.reverbMix;
-   float out=p.power?(dry+(y-dry)*q.mix)*gain(q.output):in[k]; if(!std::isfinite(out))out=0; if(k==0)*l=out;else *r=out;
+  const float inputGain=gain(q.input),outputGain=gain(q.output),driveGain=gain(q.drive),bodyGain=gain(q.body)-1,presGain=gain(q.presence)-1,airGain=gain(q.air)-1;
+  const float dubUp=std::pow(2.f,q.detune/1200.f),dubDown=1.f/dubUp;
+  for(int k=0;k<channels;++k){
+   auto& c=ch[k];c.dry.write(in[k]);float raw=c.dry.read(c.pitch.window*.5f+2);float dry=raw*inputGain;
+   // Gain applied after the pitch delay to keep the neutral and shifted paths aligned.
+   float pitched=c.pitch.tick(in[k],ratio)*inputGain;
+   float blend=enabled[1]*clamp(std::abs(ratio-1)/.002f,0,1);
+   c.pitchBlend+=a*(blend-c.pitchBlend);float y=dry+(pitched-dry)*c.pitchBlend;
+   if(!live){y=c.formants.tick(dry,y,q.formant*enabled[1],ratio,detected,enabled[1]>.001f&&enabled[0]>.001f);c.alignedDry.write(raw);raw=c.alignedDry.read(float(c.formants.n+1));dry=raw*inputGain;}
+   y+=(std::tanh(y*driveGain)/std::max(1.f,std::sqrt(driveGain))-y)*q.satMix*enabled[2];
+   float eqY=y-c.hp.low(y,q.hp,sr);float b=c.body.low(eqY,400,sr),m=c.pres.low(eqY,3500,sr),hi=eqY-c.air.low(eqY,9000,sr);
+   eqY+=b*bodyGain+(m-b)*presGain+hi*airGain;y+=(eqY-y)*enabled[3];
+   float lowDub=c.dub.tick(y,dubDown),highDub=c.dubOther.tick(y,dubUp);
+   float pan=(channels==1?.5f:(k==0?.5f-.5f*q.spread:.5f+.5f*q.spread));
+   float doubled=lowDub+(highDub-lowDub)*pan;y+=(doubled-y)*q.doubleAmount*enabled[4];
+   c.chor.write(y);float cy=c.chor.read(sr*.001f*(12+q.chorusDepth*std::sin(2*pi*(phase+k*.25f))));y+=(cy-y)*q.chorusMix*enabled[5];
+   float echo=c.echo.read(sr*.001f*q.delayMs);c.echo.write(y+echo*q.feedback*enabled[6]);y+=echo*q.delayMix*enabled[6];
+   float rv=c.room.tick(y,q.size,q.decay,q.tone,sr,k);y+=rv*q.reverbMix*enabled[7];
+   float processed=(dry+(y-dry)*q.mix)*outputGain;
+   float out=(raw+(processed-raw)*enabled[0])*fade;if(!std::isfinite(out))out=0;if(k==0)*l=out;else *r=out;
   }
  }
 };

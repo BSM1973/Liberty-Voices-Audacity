@@ -3,10 +3,10 @@
 #include <juce_dsp/juce_dsp.h>
 #include "Dsp.h"
 #include "Parameters.h"
-class VoicesProcessor final:public juce::AudioProcessor {
+class VoicesProcessor final:public juce::AudioProcessor,private juce::Timer {
 public:
  using AP=juce::AudioProcessorValueTreeState;
- VoicesProcessor(); static AP::ParameterLayout layout();
+ VoicesProcessor(); ~VoicesProcessor() override{stopTimer();} static AP::ParameterLayout layout();
  AP state{*this,nullptr,"VOICES_STATE",layout()};
  voices::Engine engine;
  std::array<std::atomic<int>,std::size(voices::specs)> cc;std::atomic<int> learn{-1};
@@ -19,5 +19,6 @@ public:
  int getNumPrograms()override{return 100;}int getCurrentProgram()override{return preset;}void setCurrentProgram(int i)override{load(i);}const juce::String getProgramName(int i)override{return i>=0&&i<100?voices::names[i/10][i%10]:"";}void changeProgramName(int,const juce::String&)override{}
  void getStateInformation(juce::MemoryBlock&)override;void setStateInformation(const void*,int)override;
  float value(const char* id)const{return state.getRawParameterValue(id)->load();}void set(const char* id,float v);void load(int);juce::File presetDir()const;
-private:double sampleRate=48000;
+public:std::atomic<bool> activeLive{false},transportPlaying{false};std::atomic<int> latencyStudio{0},latencyLive{0};
+private:double sampleRate=48000;void timerCallback()override;
 };

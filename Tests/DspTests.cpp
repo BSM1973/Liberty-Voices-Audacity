@@ -1,8 +1,9 @@
 #include "../Source/Dsp.h"
 #include <iostream>
 #include <cstdlib>
+#include <chrono>
 void check(bool b,const char* s){if(!b){std::cerr<<s<<'\n';std::exit(1);}}
-int main(){using namespace voices;for(double sr:{44100.,48000.,96000.}){Detector d;d.prepare(sr);for(float f:{110.f,220.f,440.f,660.f}){for(int i=0;i<int(sr*.4);++i)d.push(.2f*std::sin(2*pi*f*i/sr));check(std::abs(d.hz-f)<f*.025f,"pitch detection");}for(int i=0;i<int(sr*.2);++i)d.push(0);check(d.hz==0,"silence");Engine e;e.prepare(sr);Params p;p.sat=p.eq=p.doubler=p.chorus=p.delay=p.reverb=true;for(int i=0;i<int(sr*.5);++i){float x=.2f*std::sin(2*pi*225*i/sr),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<10&&std::abs(y)<10,"finite chain");}check(e.detected>220&&e.detected<230,"engine detector");p.power=false;float x=.2f,y=-.3f;e.tick(&x,&y,2,p);check(x==.2f&&y==-.3f,"bypass");}for(double sr:{44100.,48000.,96000.}){
+int main(){using namespace voices;for(double sr:{44100.,48000.,96000.}){Detector d;d.prepare(sr);for(float f:{110.f,220.f,440.f,660.f}){for(int i=0;i<int(sr*.4);++i)d.push(.2f*std::sin(2*pi*f*i/sr));check(std::abs(d.hz-f)<f*.025f,"pitch detection");}for(int i=0;i<int(sr*.2);++i)d.push(0);check(d.hz==0,"silence");Engine e;e.prepare(sr);Params p;p.sat=p.eq=p.doubler=p.chorus=p.delay=p.reverb=true;for(int i=0;i<int(sr*.5);++i){float x=.2f*std::sin(2*pi*225*i/sr),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<10&&std::abs(y)<10,"finite chain");}check(e.detected>220&&e.detected<230,"engine detector");p.power=false;for(int i=0;i<int(sr*.1);++i){float x=.2f,y=-.3f;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y),"bypass finite");}}for(double sr:{44100.,48000.,96000.}){
  Detector onset;onset.prepare(sr);int first=-1;
  for(int i=0;i<int(sr*.08);++i){float x=.18f*std::sin(2*pi*110*i/sr)+.07f*std::sin(2*pi*220*i/sr)+.03f*std::sin(2*pi*330*i/sr);onset.push(x);if(first<0&&onset.hz>0)first=i;}
  check(first>=0&&first<sr*.065,"harmonic onset below 65 ms");check(std::abs(onset.hz-110)<2,"harmonic fundamental");
@@ -25,4 +26,14 @@ int main(){using namespace voices;for(double sr:{44100.,48000.,96000.}){Detector
  double before=std::hypot(hi0,hiq0)/std::max(1e-8,std::hypot(lo0,loq0));double after=std::hypot(hi1,hiq1)/std::max(1e-8,std::hypot(lo1,loq1));
  check(after>before*1.15,"formant shift changes harmonic envelope");
  std::cout<<"Formant: "<<sr<<" Hz, added latency "<<shift.n<<" samples, envelope ratio "<<before<<" -> "<<after<<'\n';
+}for(double sr:{44100.,48000.,96000.})for(bool live:{false,true})for(int block:{32,64,128,256}){
+ Engine e;e.prepare(sr);e.setMode(live);Params p;p.eq=p.tune=false;p.mix=0;int impulse=4096,peakAt=-1;float peak=0;
+ auto begin=std::chrono::steady_clock::now();
+ for(int base=0;base<8192;base+=block)for(int j=0;j<block;++j){int i=base+j;float x=i==impulse?1.f:0.f,y=x;e.tick(&x,&y,2,p);if(std::abs(x)>peak){peak=std::abs(x);peakAt=i;}}
+ check(peakAt-impulse==e.latency()&&std::abs(peak-1.f)<.0002f,"engine dry impulse latency");
+ double ms=1000.*e.latency()/sr,elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
+ std::cout<<"Latency "<<(live?"Live":"Studio")<<" "<<sr<<" Hz block "<<block<<": "<<e.latency()<<" samples "<<ms<<" ms; dry benchmark "<<100.*elapsed/(8192./sr)<<"% realtime budget\n";
+}
+for(bool live:{false,true}){Engine e;e.prepare(48000);e.setMode(live);Params p;p.tune=false;p.eq=false;p.sat=p.chorus=p.doubler=p.delay=p.reverb=false;float last=0,maxStep=0;
+ for(int i=0;i<48000;++i){if(i==12000||i==24000){p.sat=!p.sat;p.eq=!p.eq;p.doubler=!p.doubler;p.chorus=!p.chorus;p.delay=!p.delay;p.reverb=!p.reverb;p.power=!p.power;}float x=.15f*std::sin(2*pi*220*i/48000),y=x;e.tick(&x,&y,2,p);check(std::isfinite(x)&&std::isfinite(y)&&std::abs(x)<3,"effect toggle finite");if(i>5000)maxStep=std::max(maxStep,std::abs(x-last));last=x;}check(maxStep<.3f,"effect transition bounded");
 }check(noteAllowed(60,0,1,4095)&&!noteAllowed(61,0,1,4095),"scale membership");check(nearest(61,0,1,4095)!=61,"C major");check(nearest(61,0,6,1)==60,"custom mask");std::cout<<"DSP tests passed: 3 sample rates, 12 tone detections, silence, finite chain, bypass, scales, harmonic onset, DC, stereo phase, correction and empty mask\n";}

@@ -1,4 +1,4 @@
-# Voices Audacity v0.3.0 — Liberty Music Software
+# Voices Audacity v0.4.0 — Liberty Music Software
 Development prototype, not for commercial distribution. JUCE 8.0.10 / C++17.
 
 Build on macOS: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 && cmake --build build --config Release --parallel 2`.
@@ -14,3 +14,6 @@ Shorter detection window; note hysteresis in Natural mode; transition timing on 
 
 ## v0.3.0 Vocal Formant Engine
 Experimental spectral-envelope compensation/remapping (±12 semitones) while keeping the underlying harmonic frequencies. Active on voiced material with tuning enabled; unity path has fixed WOLA delay. Existing parameter ID retained for automation compatibility. Dry/wet branches aligned for the new fixed delay, host reports nominal latency. New tests cover unity impulse reconstruction, finite output and synthetic harmonic-envelope redistribution at three rates. The global power bypass remains immediate for compatibility; real-vocal quality, exact pitch-shifter timing, CPU and host behaviour remain unverified. Live mode, effect crossfades and independent DSP quality review are not completed.
+
+## v0.4.0 Live Performance Engine
+Studio HQ retains spectral formants. Live bypasses FFT formants and uses a shorter dual-delay pitch window (nominal dry latency 4 ms + one sample). Mode is persisted and automatable, applied via message-thread latency notification when transport is not reported playing; the engine changes at a block boundary and fades in. Switching modes while recording/playing is not intended; hosts without transport information may apply immediately. Variable wet pitch delay and detector response are not the same as dry latency. Global power bypass now crossfades to latency-aligned raw signal. Natural mode filters pitch centre according to Humanize; hard tune retains raw note tracking. Cubic interpolation, dual micro-pitch voices, four damped parallel reverb lines and smoothed section switches are implemented. Synthetic dry-path impulse tests cover 32/64/128/256 sample grouping at three rates; elapsed dry benchmark is diagnostic, not a full-load real-time guarantee. No host buffer/roundtrip, vocal audition, measured vibrato retention, full-load CPU, or UI screenshot validation yet. Formants unavailable in Live. No signed installers.
