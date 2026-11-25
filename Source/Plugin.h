@@ -11,6 +11,7 @@ public:
  voices::Engine engine;
  std::array<std::atomic<int>,std::size(voices::specs)> cc;std::atomic<int> learn{-1};
  std::atomic<float> detected{0},target{0},cents{0},vocalConfidence{0},vocalProtection{0},rangeLow{0},rangeHigh{0};std::atomic<int> vocalKind{0};std::array<std::atomic<float>,2> inPeak{},outPeak{};std::atomic<bool> inClip{false},outClip{false};
+ std::atomic<bool> spectrumVisible{false};std::array<std::atomic<float>,24> spectrum{};
  std::array<bool,100> favorites{};int preset=0;bool french=true;
  void prepareToPlay(double,int)override;void releaseResources()override{};void processBlock(juce::AudioBuffer<float>&,juce::MidiBuffer&)override;
  bool isBusesLayoutSupported(const BusesLayout&)const override;
@@ -20,5 +21,5 @@ public:
  void getStateInformation(juce::MemoryBlock&)override;void setStateInformation(const void*,int)override;
  float value(const char* id)const{return state.getRawParameterValue(id)->load();}void set(const char* id,float v);void load(int);juce::File presetDir()const;
 public:std::atomic<bool> activeLive{false},transportPlaying{false};std::atomic<int> latencyStudio{0},latencyLive{0};
-private:std::array<std::array<bool,128>,16> heldNotes{};double sampleRate=48000;void timerCallback()override;
+private:static constexpr int fftSize=1024;juce::dsp::FFT spectrumFFT{10};std::array<float,fftSize*2> spectrumData{};std::array<float,fftSize> spectrumWindow{};std::array<int,25> spectrumEdges{};int spectrumPos=0;void pushSpectrum(float);std::array<std::array<bool,128>,16> heldNotes{};double sampleRate=48000;void timerCallback()override;
 };

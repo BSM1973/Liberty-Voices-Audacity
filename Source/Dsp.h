@@ -223,10 +223,10 @@ struct Engine {
   desiredRatio=std::pow(2.f,(p.tune&&p.power?goal:0.f)/12.f);ratioAlpha=1-std::exp(-1000.f/(sr*time));}
   if(control==1){
    const float intervals[]={p.interval1,p.interval2,p.interval3,p.interval4};
-   for(int i=0;i<4;++i){float steps=intervals[i];if(p.harmonyMidi&&detected>50&&p.harmonyNotes[i]>=0)steps=float(p.harmonyNotes[i])-midi(detected);harmonyRatios[i]=std::pow(2.f,clamp(steps,-24,24)/12.f);}
-   for(auto& c:ch)c.bell.configure(sr,p.bellHz,p.bellGain,p.bellQ);
+   if(p.harmony||studioEnabled[4]>.0001f)for(int i=0;i<4;++i){float steps=intervals[i];if(p.harmonyMidi&&detected>50&&p.harmonyNotes[i]>=0)steps=float(p.harmonyNotes[i])-midi(detected);harmonyRatios[i]=std::pow(2.f,clamp(steps,-24,24)/12.f);}
+   if(p.bell||studioEnabled[5]>.0001f)for(auto& c:ch)c.bell.configure(sr,p.bellHz,p.bellGain,p.bellQ);
   }
-  for(int i=0;i<4;++i){const bool valid=detected>50&&(!p.harmonyMidi||p.harmonyNotes[i]>=0);harmonyLevels[i]+=a*((valid?1.f:0.f)-harmonyLevels[i]);}
+  if(p.harmony||studioEnabled[4]>.0001f)for(int i=0;i<4;++i){const bool valid=detected>50&&(!p.harmonyMidi||p.harmonyNotes[i]>=0);harmonyLevels[i]+=a*((valid?1.f:0.f)-harmonyLevels[i]);}
   ratio+=ratioAlpha*(desiredRatio-ratio);
   correction=p.tune&&p.power?12*std::log2(ratio)*100*(1-intelligence.protection):0;
   phase+=q.chorusRate/sr;phase-=std::floor(phase);
